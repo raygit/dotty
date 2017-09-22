@@ -6,7 +6,7 @@ title: "Type Lambdas"
 A _type lambda_ lets one express a higher-kinded type directly, without
 a type definition.
 
-    [+X, Y] => Map[Y, X]
+    type T = [+X, Y] => Map[Y, X]
 
 For instance, the type above defines a binary type constructor, with a
 covariant parameter `X` and a non-variant parameter `Y`. The
