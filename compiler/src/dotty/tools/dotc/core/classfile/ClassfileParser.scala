@@ -23,6 +23,19 @@ object ClassfileParser {
   /** Indicate that there is nothing to unpickle and the corresponding symbols can
     * be invalidated. */
   object NoEmbedded extends Embedded
+
+  /** Replace raw types with wildcard applications */
+  def cook(implicit ctx: Context) = new TypeMap {
+    def apply(tp: Type): Type = tp match {
+      case tp: TypeRef if tp.symbol.typeParams.nonEmpty =>
+        AppliedType(tp, tp.symbol.typeParams.map(Function.const(TypeBounds.empty)))
+      case tp @ AppliedType(tycon, args) =>
+        // disregard tycon itself, but map over it to visit the prefix
+        tp.derivedAppliedType(mapOver(tycon), args.mapConserve(this))
+      case _ =>
+        mapOver(tp)
+    }
+  }
 }
 
 class ClassfileParser(
@@ -46,7 +59,7 @@ class ClassfileParser(
   protected var currentClassName: SimpleName = _      // JVM name of the current class
   protected var classTParams = Map[Name,Symbol]()
 
-  private var Scala2UnpicklingMode = Mode.Scala2Unpickling
+  private[this] var Scala2UnpicklingMode = Mode.Scala2Unpickling
 
   classRoot.info = (new NoCompleter).withDecls(instanceScope)
   moduleRoot.info = (new NoCompleter).withDecls(staticScope).withSourceModule(_ => staticModule)
@@ -54,7 +67,7 @@ class ClassfileParser(
   private def currentIsTopLevel(implicit ctx: Context) = classRoot.owner is Flags.PackageClass
 
   private def mismatchError(className: SimpleName) =
-    throw new IOException(s"class file '${in.file}' has location not matching its contents: contains class $className")
+    throw new IOException(s"class file '${in.file.canonicalPath}' has location not matching its contents: contains class $className")
 
   def run()(implicit ctx: Context): Option[Embedded] = try {
     ctx.debuglog("[class] >> " + classRoot.fullName)
@@ -65,7 +78,7 @@ class ClassfileParser(
     case e: RuntimeException =>
       if (ctx.debug) e.printStackTrace()
       throw new IOException(
-        i"""class file $classfile is broken, reading aborted with ${e.getClass}
+        i"""class file ${classfile.canonicalPath} is broken, reading aborted with ${e.getClass}
            |${Option(e.getMessage).getOrElse("")}""")
   }
 
@@ -241,7 +254,7 @@ class ClassfileParser(
           addConstructorTypeParams(denot)
         }
 
-        denot.info = pool.getType(in.nextChar)
+        denot.info = cook.apply(pool.getType(in.nextChar))
         if (isEnum) denot.info = ConstantType(Constant(sym))
         if (isConstructor) normalizeConstructorParams()
         setPrivateWithin(denot, jflags)
@@ -258,7 +271,7 @@ class ClassfileParser(
             ctx.warning(s"no linked class for java enum $sym in ${sym.owner}. A referencing class file might be missing an InnerClasses entry.")
           else {
             if (!(enumClass is Flags.Sealed)) enumClass.setFlag(Flags.AbstractSealed)
-            enumClass.addAnnotation(Annotation.makeChild(sym))
+            enumClass.addAnnotation(Annotation.Child(sym))
           }
         }
       } finally {
@@ -300,7 +313,7 @@ class ClassfileParser(
         case 'L' =>
           def processInner(tp: Type): Type = tp match {
             case tp: TypeRef if !(tp.symbol.owner is Flags.ModuleClass) =>
-              TypeRef(processInner(tp.prefix.widen), tp.name)
+              TypeRef.withSym(processInner(tp.prefix.widen), tp.symbol.asType, tp.name)
             case _ =>
               tp
           }

@@ -111,21 +111,21 @@ class Definitions {
         val decls = newScope
         val arity = name.functionArity
         val paramNamePrefix = tpnme.scala_ ++ str.NAME_JOIN ++ name ++ str.EXPAND_SEPARATOR
-        val argParams =
-          for (i <- List.range(1, arity + 1)) yield
-            enterTypeParam(cls, paramNamePrefix ++ "T" ++ i.toString, Contravariant, decls)
+        val argParamRefs = List.tabulate(arity) { i =>
+          enterTypeParam(cls, paramNamePrefix ++ "T" ++ (i + 1).toString, Contravariant, decls).typeRef
+        }
         val resParam = enterTypeParam(cls, paramNamePrefix ++ "R", Covariant, decls)
         val (methodType, parentTraits) =
           if (name.firstPart.startsWith(str.ImplicitFunction)) {
             val superTrait =
-              FunctionType(arity).appliedTo(argParams.map(_.typeRef) ::: resParam.typeRef :: Nil)
+              FunctionType(arity).appliedTo(argParamRefs ::: resParam.typeRef :: Nil)
             (ImplicitMethodType, superTrait :: Nil)
           }
           else (MethodType, Nil)
         val applyMeth =
           decls.enter(
             newMethod(cls, nme.apply,
-              methodType(argParams.map(_.typeRef), resParam.typeRef), Deferred))
+              methodType(argParamRefs, resParam.typeRef), Deferred))
         denot.info =
           ClassInfo(ScalaPackageClass.thisType, cls, ObjectType :: parentTraits, decls)
       }
@@ -661,6 +661,8 @@ class Definitions {
   def GetterMetaAnnot(implicit ctx: Context) = GetterMetaAnnotType.symbol.asClass
   lazy val SetterMetaAnnotType = ctx.requiredClassRef("scala.annotation.meta.setter")
   def SetterMetaAnnot(implicit ctx: Context) = SetterMetaAnnotType.symbol.asClass
+  lazy val ShowAsInfixAnotType = ctx.requiredClassRef("scala.annotation.showAsInfix")
+  def ShowAsInfixAnnot(implicit ctx: Context) = ShowAsInfixAnotType.symbol.asClass
 
   // convenient one-parameter method types
   def methOfAny(tp: Type) = MethodType(List(AnyType), tp)
@@ -911,6 +913,34 @@ class Definitions {
     arity >= 0 && isFunctionClass(sym) && tp.isRef(FunctionType(arity, sym.name.isImplicitFunction).typeSymbol)
   }
 
+  // Specialized type parameters defined for scala.Function{0,1,2}.
+  private lazy val Function1SpecializedParams: collection.Set[Type] =
+    Set(IntType, LongType, FloatType, DoubleType)
+  private lazy val Function2SpecializedParams: collection.Set[Type] =
+    Set(IntType, LongType, DoubleType)
+  private lazy val Function0SpecializedReturns: collection.Set[Type] =
+    ScalaNumericValueTypeList.toSet[Type] + UnitType + BooleanType
+  private lazy val Function1SpecializedReturns: collection.Set[Type] =
+    Set(UnitType, BooleanType, IntType, FloatType, LongType, DoubleType)
+  private lazy val Function2SpecializedReturns: collection.Set[Type] =
+    Function1SpecializedReturns
+
+  def isSpecializableFunction(cls: ClassSymbol, paramTypes: List[Type], retType: Type)(implicit ctx: Context) =
+    isFunctionClass(cls) && (paramTypes match {
+      case Nil =>
+        Function0SpecializedReturns.contains(retType)
+      case List(paramType0) =>
+        Function1SpecializedParams.contains(paramType0) &&
+        Function1SpecializedReturns.contains(retType)
+      case List(paramType0, paramType1) =>
+        Function2SpecializedParams.contains(paramType0) &&
+        Function2SpecializedParams.contains(paramType1) &&
+        Function2SpecializedReturns.contains(retType)
+      case _ =>
+        false
+    })
+
+
   def functionArity(tp: Type)(implicit ctx: Context) = tp.dealias.argInfos.length - 1
 
   def isImplicitFunctionType(tp: Type)(implicit ctx: Context) =
@@ -920,8 +950,8 @@ class Definitions {
 
   /** This class would also be obviated by the implicit function type design */
   class PerRun[T](generate: Context => T) {
-    private var current: RunId = NoRunId
-    private var cached: T = _
+    private[this] var current: RunId = NoRunId
+    private[this] var cached: T = _
     def apply()(implicit ctx: Context): T = {
       if (current != ctx.runId) {
         cached = generate(ctx)

@@ -195,7 +195,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     def valueParamss(tp: Type): (List[List[TermSymbol]], Type) = tp match {
       case tp: MethodType =>
         def valueParam(name: TermName, info: Type): TermSymbol = {
-          val maybeImplicit = if (tp.isInstanceOf[ImplicitMethodType]) Implicit else EmptyFlags
+          val maybeImplicit = if (tp.isImplicitMethod) Implicit else EmptyFlags
           ctx.newSymbol(sym, name, TermParam | maybeImplicit, info)
         }
         val params = (tp.paramNames, tp.paramInfos).zipped.map(valueParam)
@@ -826,7 +826,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
      *  @param tp      The type of the destination of the outer path.
      */
     def outerSelect(levels: Int, tp: Type)(implicit ctx: Context): Tree =
-      untpd.Select(tree, OuterSelectName(EmptyTermName, levels)).withType(tp)
+      untpd.Select(tree, OuterSelectName(EmptyTermName, levels)).withType(SkolemType(tp))
 
     // --- Higher order traversal methods -------------------------------
 
@@ -975,22 +975,6 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     def unapply(tree: Tree): Option[(Tree, List[Tree])] = tree match {
       case TypeApply(tree, targs) => Some(tree, targs)
       case _ => Some(tree, Nil)
-    }
-  }
-
-  /** A traverser that passes the enclosing class or method as an argument
-   *  to the traverse method.
-   */
-  abstract class EnclosingMethodTraverser extends TreeAccumulator[Symbol] {
-    def traverse(enclMeth: Symbol, tree: Tree)(implicit ctx: Context): Unit
-    def apply(enclMeth: Symbol, tree: Tree)(implicit ctx: Context) = {
-      tree match {
-        case _: DefTree if tree.symbol.exists =>
-          traverse(tree.symbol.enclosingMethod, tree)
-        case _ =>
-          traverse(enclMeth, tree)
-      }
-      enclMeth
     }
   }
 

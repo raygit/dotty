@@ -20,9 +20,9 @@ import language.implicitConversions
 class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
 
   /** A stack of enclosing DefDef, TypeDef, or ClassDef, or ModuleDefs nodes */
-  private var enclosingDef: untpd.Tree = untpd.EmptyTree
-  private var myCtx: Context = _ctx
-  private var printPos = ctx.settings.Yprintpos.value
+  private[this] var enclosingDef: untpd.Tree = untpd.EmptyTree
+  private[this] var myCtx: Context = _ctx
+  private[this] var printPos = ctx.settings.Yprintpos.value
   override protected[this] implicit def ctx: Context = myCtx
 
   def withEnclosingDef(enclDef: Tree[_ >: Untyped])(op: => Text): Text = {
@@ -126,8 +126,8 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
     def isInfixType(tp: Type): Boolean = tp match {
       case AppliedType(tycon, args) =>
         args.length == 2 &&
-          !Character.isUnicodeIdentifierStart(tycon.typeSymbol.name.toString.head)
-          // TODO: Once we use the 2.12 stdlib, also check the @showAsInfix annotation
+        tycon.typeSymbol.getAnnotation(defn.ShowAsInfixAnnot).map(_.argumentConstant(0).forall(_.booleanValue))
+          .getOrElse(!Character.isUnicodeIdentifierStart(tycon.typeSymbol.name.toString.head))
       case _ => false
     }
 

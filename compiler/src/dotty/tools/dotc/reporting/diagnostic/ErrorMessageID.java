@@ -97,6 +97,11 @@ public enum ErrorMessageID {
     DuplicatePrivateProtectedQualifierID,
     ExpectedStartOfTopLevelDefinitionID,
     MissingReturnTypeWithReturnStatementID,
+    NoReturnFromInlineID,
+    ReturnOutsideMethodDefinitionID,
+    UncheckedTypePatternID,
+    ExtendFinalClassID,
+    EnumCaseDefinitionInNonEnumOwnerID,
     ;
 
     public int errorNumber() {

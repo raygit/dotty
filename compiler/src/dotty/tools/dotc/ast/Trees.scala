@@ -33,7 +33,7 @@ object Trees {
   /** Property key for trees with documentation strings attached */
   val DocComment = new Property.Key[Comment]
 
-  @sharable private var nextId = 0 // for debugging
+  @sharable private[this] var nextId = 0 // for debugging
 
   type LazyTree = AnyRef     /* really: Tree | Lazy[Tree] */
   type LazyTreeList = AnyRef /* really: List[Tree] | Lazy[List[Tree]] */
@@ -1114,6 +1114,8 @@ object Trees {
     abstract class TreeMap(val cpy: TreeCopier = inst.cpy) {
 
       def transform(tree: Tree)(implicit ctx: Context): Tree = {
+        Stats.record(s"TreeMap.transform $getClass")
+        Stats.record("TreeMap.transform total")
         def localCtx =
           if (tree.hasType && tree.symbol.exists) ctx.withOwner(tree.symbol) else ctx
 
@@ -1228,6 +1230,8 @@ object Trees {
 
       def apply(x: X, trees: Traversable[Tree])(implicit ctx: Context): X = (x /: trees)(apply)
       def foldOver(x: X, tree: Tree)(implicit ctx: Context): X = {
+        Stats.record(s"TreeAccumulator.foldOver $getClass")
+        Stats.record("TreeAccumulator.foldOver total")
         def localCtx =
           if (tree.hasType && tree.symbol.exists) ctx.withOwner(tree.symbol) else ctx
         tree match {

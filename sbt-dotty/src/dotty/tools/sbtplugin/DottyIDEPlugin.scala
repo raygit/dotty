@@ -1,6 +1,7 @@
 package dotty.tools.sbtplugin
 
 import sbt._
+import sbt.Def.Initialize
 import sbt.Keys._
 import java.io._
 import java.lang.ProcessBuilder
@@ -14,6 +15,16 @@ import scala.collection.mutable.ListBuffer
 import DottyPlugin.autoImport._
 
 object DottyIDEPlugin extends AutoPlugin {
+  object autoImport {
+    val excludeFromIDE = settingKey[Boolean]("If true, do not import this project or configuration in the Dotty IDE")
+
+    val codeCommand = taskKey[Seq[String]]("Command to start VSCode")
+    val runCode = taskKey[Unit]("Start VSCode, usually called from launchIDE")
+    val launchIDE = taskKey[Unit]("Configure and run VSCode on this project")
+  }
+
+  import autoImport._
+
   // Adapted from scala-reflect
   private def distinctBy[A, B](xs: Seq[A])(f: A => B): Seq[A] = {
     val buf = new mutable.ListBuffer[A]
@@ -110,14 +121,20 @@ object DottyIDEPlugin extends AutoPlugin {
     }
   }
 
-  /** Run task `key` in all configurations in all projects in `projRefs`, using state `state` */
-  private def runInAllConfigurations[T](key: TaskKey[T], projRefs: Seq[ProjectRef], state: State): Seq[T] = {
+  /** Run task `key` in all configurations in all projects in `projRefs`, using state `state`,
+   *  configurations where `excludeFromIDE` is `true` are skipped. */
+  private def runInAllIDEConfigurations[T](key: TaskKey[T], projRefs: Seq[ProjectRef], state: State): Seq[T] = {
     val structure = Project.structure(state)
     val settings = structure.data
     val joinedTask = projRefs.flatMap { projRef =>
       val project = Project.getProjectForReference(projRef, structure).get
       project.configurations.flatMap { config =>
-        key.in(projRef, config).get(settings)
+        excludeFromIDE.in(projRef, config).get(settings) match {
+          case Some(true) =>
+            None // skip this configuration
+          case _ =>
+            key.in(projRef, config).get(settings)
+        }
       }
     }.join
 
@@ -150,20 +167,12 @@ object DottyIDEPlugin extends AutoPlugin {
 
   private val projectConfig = taskKey[Option[ProjectConfig]]("")
 
-  object autoImport {
-    val codeCommand = taskKey[Seq[String]]("Command to start VSCode")
-    val runCode = taskKey[Unit]("Start VSCode, usually called from launchIDE")
-    val launchIDE = taskKey[Unit]("Configure and run VSCode on this project")
-  }
-
-  import autoImport._
-
   override def requires: Plugins = plugins.JvmPlugin
   override def trigger = allRequirements
 
   def configureIDE = Command.command("configureIDE") { origState =>
     val (dottyVersion, projRefs, dottyState) = dottySetup(origState)
-    val configs0 = runInAllConfigurations(projectConfig, projRefs, dottyState).flatten
+    val configs0 = runInAllIDEConfigurations(projectConfig, projRefs, dottyState).flatten
 
     // Drop configurations that do not define their own sources, but just
     // inherit their sources from some other configuration.
@@ -191,43 +200,49 @@ object DottyIDEPlugin extends AutoPlugin {
 
   def compileForIDE = Command.command("compileForIDE") { origState =>
     val (dottyVersion, projRefs, dottyState) = dottySetup(origState)
-    runInAllConfigurations(compile, projRefs, dottyState)
+    runInAllIDEConfigurations(compile, projRefs, dottyState)
 
     origState
   }
 
+  private def projectConfigTask(config: Configuration): Initialize[Task[Option[ProjectConfig]]] = Def.task {
+    if ((sources in config).value.isEmpty) None
+    else {
+      // Not needed to generate the config, but this guarantees that the
+      // generated config is usable by an IDE without any extra compilation
+      // step.
+      val _ = (compile in config).value
+
+      val id = s"${thisProject.value.id}/${config.name}"
+      val compilerVersion = (scalaVersion in config).value
+      val compilerArguments = (scalacOptions in config).value
+      val sourceDirectories = (unmanagedSourceDirectories in config).value ++ (managedSourceDirectories in config).value
+      val depClasspath = Attributed.data((dependencyClasspath in config).value)
+      val classDir = (classDirectory in config).value
+
+      Some(new ProjectConfig(
+        id,
+        compilerVersion,
+        compilerArguments.toArray,
+        sourceDirectories.toArray,
+        depClasspath.toArray,
+        classDir
+      ))
+    }
+  }
+
   override def projectSettings: Seq[Setting[_]] = Seq(
-    // Use Def.derive so `projectConfig` is only defined in the configurations where the
-    // tasks/settings it depends on are defined.
-    Def.derive(projectConfig := {
-      if (sources.value.isEmpty) None
-      else {
-        // Not needed to generate the config, but this guarantees that the
-        // generated config is usable by an IDE without any extra compilation
-        // step.
-        val _ = compile.value
-
-        val id = s"${thisProject.value.id}/${configuration.value.name}"
-        val compilerVersion = scalaVersion.value
-        val compilerArguments = scalacOptions.value
-        val sourceDirectories = unmanagedSourceDirectories.value ++ managedSourceDirectories.value
-        val depClasspath = Attributed.data(dependencyClasspath.value)
-        val classDir = classDirectory.value
-
-        Some(new ProjectConfig(
-          id,
-          compilerVersion,
-          compilerArguments.toArray,
-          sourceDirectories.toArray,
-          depClasspath.toArray,
-          classDir
-        ))
-      }
-    })
+    // TODO: It would be better to use Def.derive to define projectConfig in
+    // every configuration where the keys it depends on exist, however this
+    // currently breaks aggregated tasks: https://github.com/sbt/sbt/issues/3580
+    projectConfig in Compile := projectConfigTask(Compile).value,
+    projectConfig in Test := projectConfigTask(Test).value
   )
 
   override def buildSettings: Seq[Setting[_]] = Seq(
     commands ++= Seq(configureIDE, compileForIDE),
+
+    excludeFromIDE := false,
 
     codeCommand := {
       Seq("code", "-n")

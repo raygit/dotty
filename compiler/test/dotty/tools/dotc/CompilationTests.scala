@@ -4,6 +4,8 @@ package dotc
 
 import org.junit.{ Test, BeforeClass, AfterClass }
 import org.junit.Assert._
+import org.junit.Assume._
+import org.junit.experimental.categories.Category
 
 import java.nio.file._
 import java.util.stream.{ Stream => JStream }
@@ -15,6 +17,7 @@ import dotty.tools.io.JFile
 
 
 class CompilationTests extends ParallelTesting {
+  import ParallelTesting._
   import TestConfiguration._
   import CompilationTests._
 
@@ -37,8 +40,8 @@ class CompilationTests extends ParallelTesting {
     compileList("compileStdLib", StdLibSources.whitelisted, scala2Mode.and("-migration", "-Yno-inline")) +
     compileDir("../compiler/src/dotty/tools/dotc/ast", defaultOptions) +
     compileDir("../compiler/src/dotty/tools/dotc/config", defaultOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/core", allowDeepSubtypes) +
-    compileDir("../compiler/src/dotty/tools/dotc/transform", allowDeepSubtypes) +
+    compileDir("../compiler/src/dotty/tools/dotc/core", defaultOptions) +
+    compileDir("../compiler/src/dotty/tools/dotc/transform", defaultOptions) +
     compileDir("../compiler/src/dotty/tools/dotc/parsing", defaultOptions) +
     compileDir("../compiler/src/dotty/tools/dotc/printing", defaultOptions) +
     compileDir("../compiler/src/dotty/tools/dotc/reporting", defaultOptions) +
@@ -48,7 +51,6 @@ class CompilationTests extends ParallelTesting {
     compileDir("../compiler/src/dotty/tools/dotc/core", TestFlags(classPath, noCheckOptions)) +
     compileFile("../tests/pos/nullarify.scala", defaultOptions.and("-Ycheck:nullarify")) +
     compileFile("../tests/pos-scala2/rewrites.scala", scala2Mode.and("-rewrite")).copyToTarget() +
-    compileFile("../tests/pos-special/t8146a.scala", allowDeepSubtypes) +
     compileFile("../tests/pos-special/utf8encoded.scala", explicitUTF8) +
     compileFile("../tests/pos-special/utf16encoded.scala", explicitUTF16) +
     compileList(
@@ -68,7 +70,6 @@ class CompilationTests extends ParallelTesting {
     compileFilesInDir("../tests/pos-special/strawman-collections", defaultOptions) +
     compileFile("../scala2-library/src/library/scala/collection/immutable/IndexedSeq.scala", defaultOptions) +
     compileFile("../scala2-library/src/library/scala/collection/parallel/mutable/ParSetLike.scala", defaultOptions) +
-    compileFile("../tests/pos/t2171.scala", defaultOptimised) +
     compileList(
       "parSetSubset",
       List(
@@ -159,6 +160,7 @@ class CompilationTests extends ParallelTesting {
 
   @Test def compileNeg: Unit = {
     compileShallowFilesInDir("../tests/neg", defaultOptions) +
+    compileShallowFilesInDir("../tests/neg/no-optimise", defaultOptions) +
     compileFile("../tests/neg/customArgs/typers.scala", allowDoubleBindings) +
     compileFile("../tests/neg/customArgs/overrideClass.scala", scala2Mode) +
     compileFile("../tests/neg/customArgs/autoTuplingTest.scala", defaultOptions.and("-language:noAutoTupling")) +
@@ -186,12 +188,7 @@ class CompilationTests extends ParallelTesting {
 
   @Test def runAll: Unit = {
     compileFilesInDir("../tests/run", defaultOptions) +
-    compileFile("../tests/run/i3018.scala", defaultOptimised) +
-    compileFile("../tests/run/blame_eye_triple_eee-double.scala", defaultOptimised) +
-    compileFile("../tests/run/blame_eye_triple_eee-float.scala", defaultOptimised) +
-    compileFile("../tests/run/run-bug4840.scala", defaultOptimised) +
-    compileFile("../tests/run/optimizer-array-load.scala", defaultOptimised) +
-    compileFile("../tests/run/constant-optimization.scala", defaultOptimised)
+    compileFilesInDir("../tests/run-no-optimise", defaultOptions)
   }.checkRuns()
 
   // Pickling Tests ------------------------------------------------------------
@@ -200,8 +197,8 @@ class CompilationTests extends ParallelTesting {
   // lower level of concurrency as to not kill their running VMs
 
   @Test def testPickling: Unit = {
-    compileDir("../compiler/src/dotty/tools", picklingOptionsAllowDeepSubTypes) +
-    compileDir("../compiler/src/dotty/tools/dotc", picklingOptionsAllowDeepSubTypes) +
+    compileDir("../compiler/src/dotty/tools", picklingOptions) +
+    compileDir("../compiler/src/dotty/tools/dotc", picklingOptions) +
     compileFilesInDir("../tests/new", picklingOptions) +
     compileFilesInDir("../tests/pickling", picklingOptions) +
     compileDir("../library/src/dotty/runtime", picklingOptions) +
@@ -213,7 +210,7 @@ class CompilationTests extends ParallelTesting {
     compileDir("../compiler/src/dotty/tools/dotc/printing", picklingOptions) +
     compileDir("../compiler/src/dotty/tools/repl", picklingOptions) +
     compileDir("../compiler/src/dotty/tools/dotc/rewrite", picklingOptions) +
-    compileDir("../compiler/src/dotty/tools/dotc/transform", picklingOptionsAllowDeepSubTypes) +
+    compileDir("../compiler/src/dotty/tools/dotc/transform", picklingOptions) +
     compileDir("../compiler/src/dotty/tools/dotc/typer", picklingOptions) +
     compileDir("../compiler/src/dotty/tools/dotc/util", picklingOptions) +
     compileDir("../compiler/src/dotty/tools/io", picklingOptions) +
@@ -239,7 +236,7 @@ class CompilationTests extends ParallelTesting {
 
     def lib =
       compileDir("../library/src",
-        allowDeepSubtypes.and("-Ycheck-reentrant", "-strict", "-priorityclasspath", defaultOutputDir))
+        defaultOptions.and("-Ycheck-reentrant", "-strict", "-priorityclasspath", defaultOutputDir))
 
     val compilerDir = Paths.get("../compiler/src")
     val compilerSources = sources(Files.walk(compilerDir))
@@ -296,6 +293,14 @@ class CompilationTests extends ParallelTesting {
     compileList("idempotency", List("../tests/idempotency/BootstrapChecker.scala", "../tests/idempotency/IdempotencyCheck.scala"), defaultOptions).checkRuns()
 
     tests.foreach(_.delete())
+  }
+
+  @Category(Array(classOf[SlowTests]))
+  @Test def testOptimised: Unit = {
+    val outputDir = defaultOutputDir + "optimised/"
+    compileFilesInDir("../tests/pos", defaultOptimised, outputDir).checkCompile()
+    compileFilesInDir("../tests/run", defaultOptimised, outputDir).checkRuns()
+    compileShallowFilesInDir("../tests/neg", defaultOptimised, outputDir).checkExpectedErrors()
   }
 
   private val (compilerSources, backendSources, backendJvmSources) = {

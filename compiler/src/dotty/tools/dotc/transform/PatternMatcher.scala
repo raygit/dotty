@@ -121,7 +121,7 @@ object PatternMatcher {
     // ------- Plan and test types ------------------------
 
     /** Counter to display plans nicely, for debugging */
-    private var nxId = 0
+    private[this] var nxId = 0
 
     /** The different kinds of plans */
     sealed abstract class Plan { val id = nxId; nxId += 1 }
@@ -308,12 +308,12 @@ object PatternMatcher {
           if (scrutinee.info.isNotNull || nonNull(scrutinee)) unappPlan
           else TestPlan(NonNullTest, scrutinee, tree.pos, unappPlan, onFailure)
         case Bind(name, body) =>
-          val body1 = patternPlan(scrutinee, body, onSuccess, onFailure)
-          if (name == nme.WILDCARD) body1
+          if (name == nme.WILDCARD) patternPlan(scrutinee, body, onSuccess, onFailure)
           else {
+            // The type of `name` may refer to val in `body`, therefore should come after `body`
             val bound = tree.symbol.asTerm
             initializer(bound) = ref(scrutinee)
-            LetPlan(bound, body1)
+            patternPlan(scrutinee, body, LetPlan(bound, onSuccess), onFailure)
           }
         case Alternative(alts) =>
           labelAbstract(onSuccess) { ons =>

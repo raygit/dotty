@@ -10,7 +10,7 @@ import NameKinds._
 import java.util.UUID
 
 object TastyUnpickler {
-  class UnpickleException(msg: String) extends Exception(msg)
+  class UnpickleException(msg: String) extends RuntimeException(msg)
 
   abstract class SectionUnpickler[R](val name: String) {
     def unpickle(reader: TastyReader, nameAtRef: NameTable): R
@@ -64,8 +64,8 @@ class TastyUnpickler(reader: TastyReader) {
         val result = readName().toTypeName
         val params = until(end)(readName().toTypeName)
         var sig = Signature(params, result)
-        if (sig == Signature.NotAMethod) sig = Signature.NotAMethod
-        SignedName(original, sig)
+        if (sig == Signature.NotAMethod) sig = Signature.NotAMethod // needed temporarily, as long as we read old tasty
+        original.withSig(sig).asInstanceOf[TermName]
       case _ =>
         simpleNameKindOfTag(tag)(readName())
     }

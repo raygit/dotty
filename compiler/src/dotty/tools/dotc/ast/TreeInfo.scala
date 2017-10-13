@@ -7,6 +7,7 @@ import Flags._, Trees._, Types._, Contexts._
 import Names._, StdNames._, NameOps._, Decorators._, Symbols._
 import util.HashSet
 import typer.ConstFold
+import reporting.trace
 
 trait TreeInfo[T >: Untyped <: Type] { self: Trees.Instance[T] =>
   import TreeInfo._
@@ -173,6 +174,7 @@ trait TreeInfo[T >: Untyped <: Type] { self: Trees.Instance[T] =>
     case Typed(Ident(nme.WILDCARD_STAR), _) => true
     case Typed(_, Ident(tpnme.WILDCARD_STAR)) => true
     case Typed(_, tpt: TypeTree) => tpt.hasType && tpt.tpe.isRepeatedParam
+    case NamedArg(_, arg) => isWildcardStarArg(arg)
     case _ => false
   }
 
@@ -449,7 +451,8 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
    */
   def mayBeVarGetter(sym: Symbol)(implicit ctx: Context): Boolean = {
     def maybeGetterType(tpe: Type): Boolean = tpe match {
-      case _: ExprType | _: ImplicitMethodType => true
+      case _: ExprType => true
+      case tpe: MethodType => tpe.isImplicitMethod
       case tpe: PolyType => maybeGetterType(tpe.resultType)
       case _ => false
     }
@@ -576,7 +579,7 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
    *  if no such path exists.
    *  Pre: `sym` must have a position.
    */
-  def defPath(sym: Symbol, root: Tree)(implicit ctx: Context): List[Tree] = ctx.debugTraceIndented(s"defpath($sym with position ${sym.pos}, ${root.show})") {
+  def defPath(sym: Symbol, root: Tree)(implicit ctx: Context): List[Tree] = trace.onDebug(s"defpath($sym with position ${sym.pos}, ${root.show})") {
     require(sym.pos.exists)
     object accum extends TreeAccumulator[List[Tree]] {
       def apply(x: List[Tree], tree: Tree)(implicit ctx: Context): List[Tree] = {

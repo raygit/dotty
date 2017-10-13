@@ -21,7 +21,7 @@ import ErrorReporting.errorTree
 
 import annotation.unchecked
 import util.Positions._
-import util.{SimpleMap, Stats}
+import util.Stats
 import util.common._
 import transform.SymUtils._
 import Decorators._
@@ -68,7 +68,7 @@ object Checking {
    *     Unreducible applications correspond to general existentials, and we
    *     cannot handle those.
    */
-  def checkAppliedType(tree: AppliedTypeTree)(implicit ctx: Context) = {
+  def checkAppliedType(tree: AppliedTypeTree, boundsCheck: Boolean)(implicit ctx: Context) = {
     val AppliedTypeTree(tycon, args) = tree
     // If `args` is a list of named arguments, return corresponding type parameters,
     // otherwise return type parameters unchanged
@@ -81,7 +81,7 @@ object Checking {
     val bounds = tparams.map(_.paramInfoAsSeenFrom(tycon.tpe).bounds)
     def instantiate(bound: Type, args: List[Type]) =
       HKTypeLambda.fromParams(tparams, bound).appliedTo(args)
-    checkBounds(orderedArgs, bounds, instantiate)
+    if (boundsCheck) checkBounds(orderedArgs, bounds, instantiate)
 
     def checkWildcardApply(tp: Type, pos: Position): Unit = tp match {
       case tp @ AppliedType(tycon, args) if args.exists(_.isInstanceOf[TypeBounds]) =>
@@ -156,10 +156,10 @@ object Checking {
     private val locked = mutable.Set[TypeRef]()
 
     /** Are cycles allowed within nested refinedInfos of currently checked type? */
-    private var nestedCycleOK = false
+    private[this] var nestedCycleOK = false
 
     /** Are cycles allowed within currently checked type? */
-    private var cycleOK = false
+    private[this] var cycleOK = false
 
     /** A diagnostic output string that indicates the position of the last
      *  part of a type bounds checked by checkInfo. Possible choices:
@@ -244,7 +244,7 @@ object Checking {
             locked += tp
             try checkInfo(tp.info)
             finally locked -= tp
-            if (pre1 eq pre) tp else tp.newLikeThis(pre1)
+            if (pre1 eq pre) tp else tp.withPrefix(pre1)
           }
           else tp
         } catch {
@@ -625,7 +625,7 @@ trait Checking {
           else doubleDefError(decl, other)
         }
         if ((decl is HasDefaultParams) && (other is HasDefaultParams)) {
-          ctx.error(em"two or more overloaded variants of $decl have default arguments")
+          ctx.error(em"two or more overloaded variants of $decl have default arguments", decl.pos)
           decl resetFlag HasDefaultParams
         }
       }

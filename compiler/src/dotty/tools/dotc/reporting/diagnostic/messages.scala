@@ -880,6 +880,18 @@ object messages {
            |"""
   }
 
+  case class UncheckedTypePattern(msg: String)(implicit ctx: Context)
+    extends Message(UncheckedTypePatternID) {
+    val kind = "Pattern Match Exhaustivity"
+
+    val explanation =
+      hl"""|Type arguments and type refinements are erased during compile time, thus it's
+           |impossible to check them at run-time.
+           |
+           |You can either replace the type arguments by `_` or use `@unchecked`.
+           |"""
+  }
+
   case class MatchCaseUnreachable()(implicit ctx: Context)
   extends Message(MatchCaseUnreachableID) {
     val kind = s"""Match ${hl"case"} Unreachable"""
@@ -1737,4 +1749,41 @@ object messages {
       hl"you have to provide either ${"class"}, ${"trait"}, ${"object"}, or ${"enum"} definitions after qualifiers"
   }
 
+  case class NoReturnFromInline(owner: Symbol)(implicit ctx: Context)
+    extends Message(NoReturnFromInlineID) {
+    val kind = "Syntax"
+    val msg = hl"no explicit ${"return"} allowed from inline $owner"
+    val explanation =
+      hl"""Methods marked with ${"@inline"} may not use ${"return"} statements.
+          |Instead, you should rely on the last expression's value being
+          |returned from a method.
+          |"""
+  }
+
+  case class ReturnOutsideMethodDefinition(owner: Symbol)(implicit ctx: Context)
+    extends Message(ReturnOutsideMethodDefinitionID) {
+    val kind = "Syntax"
+    val msg = hl"${"return"} outside method definition"
+    val explanation =
+      hl"""You used ${"return"} in ${owner}.
+          |${"return"} is a keyword and may only be used within method declarations.
+          |"""
+  }
+
+  case class ExtendFinalClass(clazz:Symbol, finalClazz: Symbol)(implicit ctx: Context) 
+    extends Message(ExtendFinalClassID) {
+    val kind = "Syntax"
+    val msg = hl"$clazz cannot extend ${"final"} $finalClazz"
+    val explanation =
+      hl"""A class marked with the ${"final"} keyword cannot be extended"""
+  }
+  case class EnumCaseDefinitionInNonEnumOwner(owner: Symbol)(implicit ctx: Context)
+    extends Message(EnumCaseDefinitionInNonEnumOwnerID) {
+      val kind = "Syntax"
+      val msg = em"case not allowed here, since owner ${owner} is not an ${"enum"} object"
+      val explanation =
+        hl"""${"enum"} cases are only allowed within the companion ${"object"} of an ${"enum class"}.
+            |If you want to create an ${"enum"} case, make sure the corresponding ${"enum class"} exists
+            |and has the ${"enum"} keyword."""
+  }
 }

@@ -44,11 +44,11 @@ Macro-format:
                   PROTECTEDACCESSOR Length underlying_NameRef
                   PROTECTEDSETTER   Length underlying_NameRef
                   INITIALIZER       Length underlying_NameRef
-                  SHADOWED          Length underlying_NameRef
                   AVOIDCLASH        Length underlying_NameRef
                   DIRECT            Length underlying_NameRef
                   FIELD             Length underlying_NameRef
                   EXTMETH           Length underlying_NameRef
+                  ADAPTEDCLOSURE    Length underlying_NameRef
                   OBJECTVAR         Length underlying_NameRef
                   OBJECTCLASS       Length underlying_NameRef
                   SIGNED            Length original_NameRef resultSig_NameRef paramSig_NameRef*
@@ -127,6 +127,7 @@ Standard-Section: "ASTs" TopLevelStat*
                   TERMREFdirect         sym_ASTRef
                   TERMREFsymbol         sym_ASTRef qual_Type
                   TERMREFpkg            fullyQualified_NameRef
+                  TERMREFin      Length possiblySigned_NameRef qual_Type namespace_Type
                   TERMREF               possiblySigned_NameRef qual_Type
                   THIS                  clsRef_Type
                   RECthis               recType_ASTRef
@@ -151,7 +152,8 @@ Standard-Section: "ASTs" TopLevelStat*
                   TYPEREFdirect         sym_ASTRef
                   TYPEREFsymbol         sym_ASTRef qual_Type
                   TYPEREFpkg            fullyQualified_NameRef
-                  TYPEREF               possiblySigned_NameRef qual_Type
+                  TYPEREFin      Length NameRef qual_Type namespace_Type
+                  TYPEREF               NameRef qual_Type
                   RECtype               parent_Type
                   TYPEALIAS             alias_Type
                   SUPERtype      Length this_Type underlying_Type
@@ -228,8 +230,8 @@ Standard Section: "Positions" Assoc*
 object TastyFormat {
 
   final val header = Array(0x5C, 0xA1, 0xAB, 0x1F)
-  final val MajorVersion = 0
-  final val MinorVersion = 5
+  val MajorVersion = 1
+  val MinorVersion = 0
 
   // Name tags
 
@@ -248,11 +250,11 @@ object TastyFormat {
   final val PROTECTEDACCESSOR = 21
   final val PROTECTEDSETTER = 22
   final val INITIALIZER = 23
-  final val SHADOWED = 24
   final val AVOIDCLASH = 30
   final val DIRECT = 31
   final val FIELD = 32
   final val EXTMETH = 33
+  final val ADAPTEDCLOSURE = 34
   final val OBJECTVAR = 39
   final val OBJECTCLASS = 40
 
@@ -262,6 +264,7 @@ object TastyFormat {
   final val IMPLMETH = 64
 
   // AST tags
+  // Cat. 1:    tag
 
   final val UNITconst = 2
   final val FALSEconst = 3
@@ -294,6 +297,8 @@ object TastyFormat {
   final val DEFAULTparameterized = 30
   final val STABLE = 31
 
+  // Cat. 2:    tag Nat
+
   final val SHARED = 64
   final val TERMREFdirect = 65
   final val TYPEREFdirect = 66
@@ -311,6 +316,8 @@ object TastyFormat {
   final val IMPORTED = 78
   final val RENAMED = 79
 
+  // Cat. 3:    tag AST
+
   final val THIS = 96
   final val QUALTHIS = 97
   final val CLASSconst = 98
@@ -325,6 +332,8 @@ object TastyFormat {
   final val TYPEALIAS = 107
   final val SINGLETONtpt = 108
 
+  // Cat. 4:    tag Nat AST
+
   final val IDENT = 112
   final val IDENTtpt = 113
   final val SELECT = 114
@@ -334,6 +343,8 @@ object TastyFormat {
   final val TYPEREFsymbol = 118
   final val TYPEREF = 119
   final val SELFDEF = 120
+
+  // Cat. 5:    tag Length ...
 
   final val PACKAGE = 128
   final val VALDEF = 129
@@ -382,6 +393,8 @@ object TastyFormat {
   final val PARAMtype = 174
   final val ANNOTATION = 175
   final val TYPEARGtype = 176
+  final val TERMREFin = 177
+  final val TYPEREFin = 178
 
   final val firstSimpleTreeTag = UNITconst
   final val firstNatTreeTag = SHARED
@@ -456,11 +469,11 @@ object TastyFormat {
     case PROTECTEDACCESSOR => "PROTECTEDACCESSOR"
     case PROTECTEDSETTER => "PROTECTEDSETTER"
     case INITIALIZER => "INITIALIZER"
-    case SHADOWED => "SHADOWED"
     case AVOIDCLASH => "AVOIDCLASH"
     case DIRECT => "DIRECT"
     case FIELD => "FIELD"
     case EXTMETH => "EXTMETH"
+    case ADAPTEDCLOSURE => "ADAPTEDCLOSURE"
     case OBJECTVAR => "OBJECTVAR"
     case OBJECTCLASS => "OBJECTCLASS"
 
@@ -565,6 +578,8 @@ object TastyFormat {
     case SINGLETONtpt => "SINGLETONtpt"
     case SUPERtype => "SUPERtype"
     case TYPEARGtype => "TYPEARGtype"
+    case TERMREFin => "TERMREFin"
+    case TYPEREFin => "TYPEREFin"
     case REFINEDtype => "REFINEDtype"
     case REFINEDtpt => "REFINEDtpt"
     case APPLIEDtype => "APPLIEDtype"
@@ -593,7 +608,7 @@ object TastyFormat {
    */
   def numRefs(tag: Int) = tag match {
     case VALDEF | DEFDEF | TYPEDEF | TYPEPARAM | PARAM | NAMEDARG | RETURN | BIND |
-         SELFDEF | REFINEDtype => 1
+         SELFDEF | REFINEDtype | TERMREFin | TYPEREFin => 1
     case RENAMED | PARAMtype => 2
     case POLYtype | METHODtype | TYPELAMBDAtype => -1
     case _ => 0

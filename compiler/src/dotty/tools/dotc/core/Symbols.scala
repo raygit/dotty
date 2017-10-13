@@ -394,23 +394,38 @@ object Symbols {
 
     type ThisName <: Name
 
-    //assert(id != 4285)
+    //assert(id != 723)
 
     /** The last denotation of this symbol */
     private[this] var lastDenot: SymDenotation = _
+    private[this] var checkedPeriod: Period = Nowhere
+
+    private[core] def invalidateDenotCache() = { checkedPeriod = Nowhere }
 
     /** Set the denotation of this symbol */
-    private[core] def denot_=(d: SymDenotation) =
+    private[core] def denot_=(d: SymDenotation) = {
       lastDenot = d
+      checkedPeriod = Nowhere
+    }
 
     /** The current denotation of this symbol */
     final def denot(implicit ctx: Context): SymDenotation = {
-      var denot = lastDenot
-      if (!(denot.validFor contains ctx.period)) {
-        denot = denot.current.asInstanceOf[SymDenotation]
-        lastDenot = denot
-      }
-      denot
+      val lastd = lastDenot
+      if (checkedPeriod == ctx.period) lastd
+      else computeDenot(lastd)
+    }
+
+    private def computeDenot(lastd: SymDenotation)(implicit ctx: Context): SymDenotation = {
+      val now = ctx.period
+      checkedPeriod = now
+      if (lastd.validFor contains now) lastd else recomputeDenot(lastd)
+    }
+
+    /** Overridden in NoSymbol */
+    protected def recomputeDenot(lastd: SymDenotation)(implicit ctx: Context) = {
+      val newd = lastd.current.asInstanceOf[SymDenotation]
+      lastDenot = newd
+      newd
     }
 
     /** The initial denotation of this symbol, without going through `current` */
@@ -429,7 +444,6 @@ object Symbols {
       lastDenot.validFor.runId == ctx.runId || ctx.stillValid(lastDenot)
 
     /** Designator overrides */
-    final override def isSymbol = true
     final override def isTerm(implicit ctx: Context): Boolean =
       (if (defRunId == ctx.runId) lastDenot else denot).isTerm
     final override def isType(implicit ctx: Context): Boolean =
@@ -446,9 +460,21 @@ object Symbols {
     final def isClass: Boolean = isInstanceOf[ClassSymbol]
     final def asClass: ClassSymbol = asInstanceOf[ClassSymbol]
 
+    /** Test whether symbol is referenced symbolically. This
+     *  conservatively returns `false` if symbol does not yet have a denotation
+     */
     final def isReferencedSymbolically(implicit ctx: Context) = {
       val d = lastDenot
       d != null && (d.is(NonMember) || d.isTerm && ctx.phase.symbolicRefs)
+    }
+
+    /** Test whether symbol is private. This
+     *  conservatively returns `false` if symbol does not yet have a denotation, or denotation
+     *  is a class that is not yet read.
+     */
+    final def isPrivate(implicit ctx: Context) = {
+      val d = lastDenot
+      d != null && d.flagsUNSAFE.is(Private)
     }
 
     /** The symbol's signature if it is completed or a method, NotAMethod otherwise. */
@@ -489,7 +515,7 @@ object Symbols {
           if (this is Module) this.moduleClass.validFor |= InitialPeriod
         }
         else this.owner.asClass.ensureFreshScopeAfter(phase)
-        if (!this.flagsUNSAFE.is(Private))
+        if (!isPrivate)
           assert(phase.changesMembers, i"$this entered in ${this.owner} at undeclared phase $phase")
         entered
       }
@@ -619,8 +645,8 @@ object Symbols {
 
   @sharable object NoSymbol extends Symbol(NoCoord, 0) {
     denot = NoDenotation
-
     override def associatedFile(implicit ctx: Context): AbstractFile = NoSource.file
+    override def recomputeDenot(lastd: SymDenotation)(implicit ctx: Context): SymDenotation = NoDenotation
   }
 
   implicit class Copier[N <: Name](sym: Symbol { type ThisName = N })(implicit ctx: Context) {

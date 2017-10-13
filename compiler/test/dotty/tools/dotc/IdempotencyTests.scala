@@ -2,14 +2,15 @@ package dotty
 package tools
 package dotc
 
-import java.io.{ File => JFile }
-import java.nio.file.{ Files, Paths, Path }
+import java.io.{File => JFile}
+import java.nio.file.{Files, Path, Paths}
 
-import org.junit.{ Test, AfterClass }
+import org.junit.Assume.assumeTrue
+import org.junit.{AfterClass, Test}
+import org.junit.experimental.categories.Category
 
 import scala.concurrent.duration._
-
-import vulpix.{ ParallelTesting, SummaryReport, SummaryReporting, TestConfiguration }
+import vulpix.{ParallelTesting, SummaryReport, SummaryReporting, TestConfiguration}
 
 
 class IdempotencyTests extends ParallelTesting {
@@ -24,8 +25,9 @@ class IdempotencyTests extends ParallelTesting {
   def isInteractive = SummaryReport.isInteractive
   def testFilter = Properties.testsFilter
 
-  /* TODO: Only run them selectively? */
+  @Category(Array(classOf[SlowTests]))
   @Test def idempotency: Unit = {
+
     val opt = defaultOptions.and("-YemitTasty")
 
     def sourcesFrom(dir: Path) = CompilationTests.sources(Files.walk(dir))
