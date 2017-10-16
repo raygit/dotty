@@ -7,7 +7,7 @@ import Types._
 import Contexts._
 import Flags._
 import ast.Trees._
-import ast.{tpd, untpd}
+import ast.tpd
 import Decorators._
 import Symbols._
 import StdNames._
@@ -377,8 +377,9 @@ class SpaceEngine(implicit ctx: Context) extends SpaceLogic {
   /* Whether the extractor is irrefutable */
   def irrefutable(unapp: tpd.Tree): Boolean = {
     // TODO: optionless patmat
-    unapp.tpe.widen.resultType.isRef(scalaSomeClass) ||
-      (unapp.symbol.is(Synthetic) && unapp.symbol.owner.linkedClass.is(Case))
+    unapp.tpe.widen.finalResultType.isRef(scalaSomeClass) ||
+      (unapp.symbol.is(Synthetic) && unapp.symbol.owner.linkedClass.is(Case)) ||
+      productArity(unapp.tpe.widen.finalResultType) > 0
   }
 
   /** Return the space that represents the pattern `pat`
@@ -403,21 +404,37 @@ class SpaceEngine(implicit ctx: Context) extends SpaceLogic {
       else
         Prod(pat.tpe.stripAnnots, fun.tpe.widen, fun.symbol, pats.map(project), irrefutable(fun))
     case Typed(pat @ UnApply(_, _, _), _) => project(pat)
-    case Typed(expr, _) => Typ(erase(expr.tpe.stripAnnots), true)
+    case Typed(expr, tpt) =>
+      val unchecked = expr.tpe.hasAnnotation(ctx.definitions.UncheckedAnnot)
+      def warn(msg: String): Unit = if (!unchecked) ctx.warning(UncheckedTypePattern(msg), tpt.pos)
+      Typ(erase(expr.tpe.stripAnnots)(warn), true)
     case _ =>
       debug.println(s"unknown pattern: $pat")
       Empty
   }
 
   /* Erase a type binding according to erasure semantics in pattern matching */
-  def erase(tp: Type): Type = tp match {
+  def erase(tp: Type)(implicit warn: String => Unit): Type = tp match {
     case tp @ AppliedType(tycon, args) =>
       if (tycon.isRef(defn.ArrayClass)) tp.derivedAppliedType(tycon, args.map(erase))
-      else tp.derivedAppliedType(tycon, args.map(t => WildcardType))
+      else {
+        val ignoreWarning = args.forall { p =>
+          p.typeSymbol.is(BindDefinedType) ||
+            p.hasAnnotation(defn.UncheckedAnnot) ||
+            p.isInstanceOf[TypeBounds]
+        }
+        if (!ignoreWarning)
+          warn("type arguments are not checked since they are eliminated by erasure")
+
+        tp.derivedAppliedType(tycon, args.map(t => WildcardType))
+      }
     case OrType(tp1, tp2) =>
       OrType(erase(tp1), erase(tp2))
     case AndType(tp1, tp2) =>
       AndType(erase(tp1), erase(tp2))
+    case tp: RefinedType =>
+      warn("type refinement is not checked since it is eliminated by erasure")
+      tp.derivedRefinedType(erase(tp.parent), tp.refinedName, WildcardType)
     case _ => tp
   }
 
@@ -451,6 +468,7 @@ class SpaceEngine(implicit ctx: Context) extends SpaceLogic {
   /** Parameter types of the case class type `tp`. Adapted from `unapplyPlan` in patternMatcher  */
   def signature(unapp: Type, unappSym: Symbol, argLen: Int): List[Type] = {
     def caseClass = unappSym.owner.linkedClass
+
     lazy val caseAccessors = caseClass.caseAccessors.filter(_.is(Method))
 
     def isSyntheticScala2Unapply(sym: Symbol) =
@@ -458,33 +476,45 @@ class SpaceEngine(implicit ctx: Context) extends SpaceLogic {
 
     val mt @ MethodType(_) = unapp.widen
 
-    if (isSyntheticScala2Unapply(unappSym) && caseAccessors.length == argLen)
-      caseAccessors.map(_.info.asSeenFrom(mt.paramInfos.head, caseClass).widen)
-    else if (mt.resultType.isRef(defn.BooleanClass))
-      List()
-    else {
-      val isUnapplySeq = unappSym.name == nme.unapplySeq
-      if (isProductMatch(mt.resultType, argLen) && !isUnapplySeq) {
-        productSelectors(mt.resultType).take(argLen)
-          .map(_.info.asSeenFrom(mt.resultType, mt.resultType.classSymbol).widen)
-      }
+    // Case unapply:
+    // 1. return types of constructor fields if the extractor is synthesized for Scala2 case classes & length match
+    // 2. return Nil if unapply returns Boolean  (boolean pattern)
+    // 3. return product selector types if unapply returns a product type (product pattern)
+    // 4. return product selectors of `T` where `def get: T` is a member of the return type of unapply & length match (named-based pattern)
+    // 5. otherwise, return `T` where `def get: T` is a member of the return type of unapply
+    //
+    // Case unapplySeq:
+    // 1. return the type `List[T]` where `T` is the element type of the unapplySeq return type `Seq[T]`
+
+    val sig =
+      if (isSyntheticScala2Unapply(unappSym) && caseAccessors.length == argLen)
+        caseAccessors.map(_.info.asSeenFrom(mt.paramInfos.head, caseClass).widen)
+      else if (mt.finalResultType.isRef(defn.BooleanClass))
+        List()
       else {
-        val resTp = mt.resultType.select(nme.get).resultType.widen
-        if (isUnapplySeq) scalaListType.appliedTo(resTp.argTypes.head) :: Nil
-        else if (argLen == 0) Nil
-        else productSelectors(resTp).map(_.info.asSeenFrom(resTp, resTp.classSymbol).widen)
+        val isUnapplySeq = unappSym.name == nme.unapplySeq
+        if (isProductMatch(mt.finalResultType, argLen) && !isUnapplySeq) {
+          productSelectors(mt.finalResultType).take(argLen)
+            .map(_.info.asSeenFrom(mt.finalResultType, mt.resultType.classSymbol).widen)
+        }
+        else {
+          val resTp = mt.finalResultType.select(nme.get).finalResultType.widen
+          if (isUnapplySeq) scalaListType.appliedTo(resTp.argTypes.head) :: Nil
+          else if (argLen == 0) Nil
+          else if (isProductMatch(resTp, argLen))
+            productSelectors(resTp).map(_.info.asSeenFrom(resTp, resTp.classSymbol).widen)
+          else resTp :: Nil
+        }
       }
-    }
+
+    debug.println(s"signature of ${unappSym.showFullName} ----> ${sig.map(_.show).mkString(", ")}")
+
+    sig
   }
 
   /** Decompose a type into subspaces -- assume the type can be decomposed */
   def decompose(tp: Type): List[Space] = {
-    val children = tp.classSymbol.annotations.filter(_.symbol == ctx.definitions.ChildAnnot).map { annot =>
-      // refer to definition of Annotation.makeChild
-      annot.tree match {
-        case Apply(TypeApply(_, List(tpTree)), _) => tpTree.symbol
-      }
-    }
+    val children = tp.classSymbol.children
 
     debug.println(s"candidates for ${tp.show} : [${children.map(_.show).mkString(", ")}]")
 
@@ -542,7 +572,7 @@ class SpaceEngine(implicit ctx: Context) extends SpaceLogic {
 
     val childTp  = if (child.isTerm) child.termRef else child.typeRef
 
-    val resTp = instantiate(childTp, parent)(ctx.fresh.setNewTyperState)
+    val resTp = instantiate(childTp, parent)(ctx.fresh.setNewTyperState())
 
     if (!resTp.exists)  {
       debug.println(s"[refine] unqualified child ousted: ${childTp.show} !< ${parent.show}")
@@ -705,14 +735,14 @@ class SpaceEngine(implicit ctx: Context) extends SpaceLogic {
           showType(tp) + params(tp).map(_ => "_").mkString("(", ", ", ")")
         else if (decomposed) "_: " + showType(tp)
         else "_"
-      case Prod(tp, fun, _, params, _) =>
+      case Prod(tp, fun, sym, params, _) =>
         if (ctx.definitions.isTupleType(tp))
           "(" + params.map(doShow(_)).mkString(", ") + ")"
         else if (tp.isRef(scalaConsType.symbol))
           if (mergeList) params.map(doShow(_, mergeList)).mkString(", ")
           else params.map(doShow(_, true)).filter(_ != "Nil").mkString("List(", ", ", ")")
         else
-          showType(tp) + params.map(doShow(_)).mkString("(", ", ", ")")
+          showType(sym.owner.typeRef) + params.map(doShow(_)).mkString("(", ", ", ")")
       case Or(_) =>
         throw new Exception("incorrect flatten result " + s)
     }
@@ -721,12 +751,10 @@ class SpaceEngine(implicit ctx: Context) extends SpaceLogic {
   }
 
   def checkable(tree: Match): Boolean = {
-    def isCheckable(tp: Type): Boolean = tp match {
-      case AnnotatedType(tp, annot) =>
-        (ctx.definitions.UncheckedAnnot != annot.symbol) && isCheckable(tp)
-      case _ =>
-        // Possible to check everything, but be compatible with scalac by default
-        ctx.settings.YcheckAllPatmat.value ||
+    // Possible to check everything, but be compatible with scalac by default
+    def isCheckable(tp: Type): Boolean =
+        !tp.hasAnnotation(defn.UncheckedAnnot) && (
+          ctx.settings.YcheckAllPatmat.value ||
           tp.typeSymbol.is(Sealed) ||
           tp.isInstanceOf[OrType] ||
           (tp.isInstanceOf[AndType] && {
@@ -737,7 +765,7 @@ class SpaceEngine(implicit ctx: Context) extends SpaceLogic {
           tp.typeSymbol.is(Enum) ||
           canDecompose(tp) ||
           (defn.isTupleType(tp) && tp.dealias.argInfos.exists(isCheckable(_)))
-    }
+        )
 
     val Match(sel, cases) = tree
     val res = isCheckable(sel.tpe.widen.dealiasKeepAnnots)

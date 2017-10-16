@@ -29,7 +29,7 @@ object EtaExpansion {
       val liftedType = fullyDefinedType(expr.tpe.widen, "lifted expression", expr.pos)
       val sym = ctx.newSymbol(ctx.owner, name, EmptyFlags, liftedType, coord = positionCoord(expr.pos))
       defs += ValDef(sym, expr)
-      ref(sym.valRef)
+      ref(sym.termRef)
     }
 
   /** Lift out common part of lhs tree taking part in an operator assignment such as
@@ -145,7 +145,7 @@ object EtaExpansion {
       ids = ids.init :+ repeated(ids.last)
     var body: Tree = Apply(lifted, ids)
     mt.resultType match {
-      case rt: MethodType if !rt.isImplicit => body = PostfixOp(body, Ident(nme.WILDCARD))
+      case rt: MethodType if !rt.isImplicitMethod => body = PostfixOp(body, Ident(nme.WILDCARD))
       case _ =>
     }
     val fn = untpd.Function(params, body)

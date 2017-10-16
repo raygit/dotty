@@ -2,10 +2,12 @@ package dotty.tools.dotc.util
 
 /** A hash set that allows some privileged protected access to its internals
  */
-class HashSet[T >: Null <: AnyRef](initialCapacity: Int, loadFactor: Float = 0.25f) extends Set[T] {
-  private var used: Int = _
-  private var limit: Int = _
-  private var table: Array[AnyRef] = _
+class HashSet[T >: Null <: AnyRef](powerOfTwoInitialCapacity: Int, loadFactor: Float = 0.25f) extends Set[T] {
+  private[this] var used: Int = _
+  private[this] var limit: Int = _
+  private[this] var table: Array[AnyRef] = _
+
+  protected def isEqual(x: T, y: T): Boolean = x.equals(y)
 
   clear()
 
@@ -20,25 +22,27 @@ class HashSet[T >: Null <: AnyRef](initialCapacity: Int, loadFactor: Float = 0.2
   /** Remove all elements from this set and set back to initial configuration */
   def clear(): Unit = {
     used = 0
-    allocate(initialCapacity)
+    allocate(powerOfTwoInitialCapacity)
   }
 
-  /** Turn hashode `x` into a table index */
-  private def index(x: Int): Int = math.abs(x % table.length)
+  /** Turn hashcode `x` into a table index */
+  private def index(x: Int): Int = x & (table.length - 1)
 
   /** Hashcode, can be overridden */
   def hash(x: T): Int = x.hashCode
 
-  /** Find entry such that `x equals entry`. If it exists, return it.
+  private def entryAt(idx: Int) = table.apply(idx).asInstanceOf[T]
+
+  /** Find entry such that `isEqual(x, entry)`. If it exists, return it.
    *  If not, enter `x` in set and return `x`.
    */
   def findEntryOrUpdate(x: T): T = {
     var h = index(hash(x))
-    var entry = table(h)
+    var entry = entryAt(h)
     while (entry ne null) {
-      if (x equals entry) return entry.asInstanceOf[T]
+      if (isEqual(x, entry)) return entry
       h = index(h + 1)
-      entry = table(h)
+      entry = entryAt(h)
     }
     addEntryAt(h, x)
   }
@@ -51,27 +55,27 @@ class HashSet[T >: Null <: AnyRef](initialCapacity: Int, loadFactor: Float = 0.2
     x
   }
 
-  /** The entry in the set such that `x equals entry`, or else `null`. */
+  /** The entry in the set such that `isEqual(x, entry)`, or else `null`. */
   def findEntry(x: T): T = {
     var h = index(hash(x))
-    var entry = table(h)
-    while ((entry ne null) && !(x equals entry)) {
+    var entry = entryAt(h)
+    while ((entry ne null) && !isEqual(x, entry)) {
       h = index(h + 1)
-      entry = table(h)
+      entry = entryAt(h)
     }
     entry.asInstanceOf[T]
   }
 
-  private var rover: Int = -1
+  private[this] var rover: Int = -1
 
   /** Add entry `x` to set */
   def addEntry(x: T): Unit = {
     var h = index(hash(x))
-    var entry = table(h)
+    var entry = entryAt(h)
     while (entry ne null) {
-      if (x equals entry) return
+      if (isEqual(x, entry)) return
       h = index(h + 1)
-      entry = table(h)
+      entry = entryAt(h)
     }
     table(h) = x
     used += 1
@@ -85,7 +89,7 @@ class HashSet[T >: Null <: AnyRef](initialCapacity: Int, loadFactor: Float = 0.2
 
   /** The iterator of all elements in the set */
   def iterator = new Iterator[T] {
-    private var i = 0
+    private[this] var i = 0
     def hasNext: Boolean = {
       while (i < table.length && (table(i) eq null)) i += 1
       i < table.length
@@ -123,10 +127,10 @@ class HashSet[T >: Null <: AnyRef](initialCapacity: Int, loadFactor: Float = 0.2
 
   private def addOldEntry(x: T): Unit = {
     var h = index(hash(x))
-    var entry = table(h)
+    var entry = entryAt(h)
     while (entry ne null) {
       h = index(h + 1)
-      entry = table(h)
+      entry = entryAt(h)
     }
     table(h) = x
   }

@@ -33,11 +33,11 @@ import Decorators.SymbolIteratorDecorator
  *
  *  Lines ending in a horizontal line mean subtying (right is a subtype of left).
  *
- *  NamedType------TermRefWithSignature
- *    |                    |                     Symbol---------ClassSymbol
- *    |                    |                       |                |
- *    | denot              | denot                 | denot          | denot
- *    v                    v                       v                v
+ *  NamedType
+ *    |                                          Symbol---------ClassSymbol
+ *    |                                            |                |
+ *    | denot                                      | denot          | denot
+ *    v                                            v                v
  *  Denotation-+-----SingleDenotation-+------SymDenotation-+----ClassDenotation
  *             |                      |
  *             +-----MultiDenotation  |
@@ -51,8 +51,6 @@ import Decorators.SymbolIteratorDecorator
  *                              prefix: Type
  *                              name: Name
  *                           It has two subtypes: TermRef and TypeRef
- *  TermRefWithSignature     A TermRef that has in addition a signature to select an overloaded variant, with new field
- *                              sig: Signature
  *  Symbol                   A label for a definition or declaration in one compiler run
  *  ClassSymbol              A symbol representing a class
  *  Denotation               The meaning of a named type or symbol during a period
@@ -327,7 +325,7 @@ object Denotations {
                 if (tp1.isInstanceOf[PolyType] && tp2.isInstanceOf[MethodType]) tp2
                 else if (tp2.isInstanceOf[PolyType] && tp1.isInstanceOf[MethodType]) tp1
                 else if (ctx.typeComparer.matchingParams(tp1, tp2) &&
-                         tp1.isImplicit == tp2.isImplicit)
+                         tp1.isImplicitMethod == tp2.isImplicitMethod)
                   tp1.derivedLambdaType(
                     mergeParamNames(tp1, tp2), tp1.paramInfos,
                     infoMeet(tp1.resultType, tp2.resultType.subst(tp2, tp1)))
@@ -344,10 +342,10 @@ object Denotations {
       def mergeDenot(denot1: Denotation, denot2: SingleDenotation): Denotation = denot1 match {
         case denot1 @ MultiDenotation(denot11, denot12) =>
           val d1 = mergeDenot(denot11, denot2)
-          if (d1.exists) denot1.derivedMultiDenotation(d1, denot12)
+          if (d1.exists) denot1.derivedUnionDenotation(d1, denot12)
           else {
             val d2 = mergeDenot(denot12, denot2)
-            if (d2.exists) denot1.derivedMultiDenotation(denot11, d2)
+            if (d2.exists) denot1.derivedUnionDenotation(denot11, d2)
             else NoDenotation
           }
         case denot1: SingleDenotation =>
@@ -483,7 +481,7 @@ object Denotations {
           tp2 match {
             case tp2: MethodOrPoly
             if ctx.typeComparer.matchingParams(tp1, tp2) &&
-               tp1.isImplicit == tp2.isImplicit =>
+               tp1.isImplicitMethod == tp2.isImplicitMethod =>
               tp1.derivedLambdaType(
                 mergeParamNames(tp1, tp2), tp1.paramInfos,
                 tp1.resultType | tp2.resultType.subst(tp2, tp1))
@@ -534,11 +532,11 @@ object Denotations {
       else if (!that.exists) that
       else this match {
         case denot1 @ MultiDenotation(denot11, denot12) =>
-          denot1.derivedMultiDenotation(denot11 | (that, pre), denot12 | (that, pre))
+          denot1.derivedUnionDenotation(denot11 | (that, pre), denot12 | (that, pre))
         case denot1: SingleDenotation =>
           that match {
             case denot2 @ MultiDenotation(denot21, denot22) =>
-              denot2.derivedMultiDenotation(this | (denot21, pre), this | (denot22, pre))
+              denot2.derivedUnionDenotation(this | (denot21, pre), this | (denot22, pre))
             case denot2: SingleDenotation =>
               unionDenot(denot1, denot2)
           }
@@ -560,9 +558,10 @@ object Denotations {
     final def isType = false
     final def signature(implicit ctx: Context) = Signature.OverloadedSignature
     def atSignature(sig: Signature, site: Type, relaxed: Boolean)(implicit ctx: Context): Denotation =
-      derivedMultiDenotation(denot1.atSignature(sig, site, relaxed), denot2.atSignature(sig, site, relaxed))
+      if (sig eq Signature.OverloadedSignature) this
+      else derivedUnionDenotation(denot1.atSignature(sig, site, relaxed), denot2.atSignature(sig, site, relaxed))
     def current(implicit ctx: Context): Denotation =
-      derivedMultiDenotation(denot1.current, denot2.current)
+      derivedUnionDenotation(denot1.current, denot2.current)
     def altsWith(p: Symbol => Boolean): List[SingleDenotation] =
       denot1.altsWith(p) ++ denot2.altsWith(p)
     def suchThat(p: Symbol => Boolean)(implicit ctx: Context): SingleDenotation = {
@@ -582,12 +581,15 @@ object Denotations {
       val d2 = denot2 accessibleFrom (pre, superAccess)
       if (!d1.exists) d2
       else if (!d2.exists) d1
-      else derivedMultiDenotation(d1, d2)
+      else derivedUnionDenotation(d1, d2)
     }
     def mapInfo(f: Type => Type)(implicit ctx: Context): Denotation =
-      derivedMultiDenotation(denot1.mapInfo(f), denot2.mapInfo(f))
-    def derivedMultiDenotation(d1: Denotation, d2: Denotation) =
-      if ((d1 eq denot1) && (d2 eq denot2)) this else MultiDenotation(d1, d2)
+      derivedUnionDenotation(denot1.mapInfo(f), denot2.mapInfo(f))
+    def derivedUnionDenotation(d1: Denotation, d2: Denotation): Denotation =
+      if ((d1 eq denot1) && (d2 eq denot2)) this
+      else if (!d1.exists) d2
+      else if (!d2.exists) d1
+      else MultiDenotation(d1, d2)
     override def toString = alternatives.mkString(" <and> ")
 
     private def multiHasNot(op: String): Nothing =
@@ -655,33 +657,21 @@ object Denotations {
     def termRef(implicit ctx: Context): TermRef =
       TermRef(symbol.owner.thisType, symbol.name.asTermName, this)
 
-    /** The TermRef representing this term denotation at its original location
-     *  and at signature `NotAMethod`.
-     */
-    def valRef(implicit ctx: Context): TermRef =
-      TermRef.withSigAndDenot(symbol.owner.thisType, symbol.name.asTermName, Signature.NotAMethod, this)
-
-    /** The TermRef representing this term denotation at its original location
-     *  at the denotation's signature.
-     *  @note  Unlike `valRef` and `termRef`, this will force the completion of the
-     *         denotation via a call to `info`.
-     */
-    def termRefWithSig(implicit ctx: Context): TermRef =
-      TermRef.withSigAndDenot(symbol.owner.thisType, symbol.name.asTermName, signature, this)
-
     /** The NamedType representing this denotation at its original location.
-     *  Same as either `typeRef` or `termRefWithSig` depending whether this denotes a type or not.
+     *  Same as either `typeRef` or `termRef` depending whether this denotes a type or not.
      */
     def namedType(implicit ctx: Context): NamedType =
-      if (isType) typeRef else termRefWithSig
+      if (isType) typeRef else termRef
 
     // ------ Transformations -----------------------------------------
 
     private[this] var myValidFor: Period = Nowhere
 
     def validFor = myValidFor
-    def validFor_=(p: Period) =
+    def validFor_=(p: Period) = {
       myValidFor = p
+      symbol.invalidateDenotCache()
+    }
 
     /** The next SingleDenotation in this run, with wrap-around from last to first.
      *
@@ -1132,9 +1122,9 @@ object Denotations {
      */
     def filterExcluded(excluded: FlagSet)(implicit ctx: Context): PreDenotation
 
-    private var cachedPrefix: Type = _
-    private var cachedAsSeenFrom: AsSeenFromResult = _
-    private var validAsSeenFrom: Period = Nowhere
+    private[this] var cachedPrefix: Type = _
+    private[this] var cachedAsSeenFrom: AsSeenFromResult = _
+    private[this] var validAsSeenFrom: Period = Nowhere
     type AsSeenFromResult <: PreDenotation
 
     /** The denotation with info(s) as seen from prefix type */

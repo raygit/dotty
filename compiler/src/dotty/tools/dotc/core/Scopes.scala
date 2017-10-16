@@ -210,11 +210,11 @@ object Scopes {
 
     /** the hash table
      */
-    private var hashTable: Array[ScopeEntry] = null
+    private[this] var hashTable: Array[ScopeEntry] = null
 
     /** a cache for all elements, to be used by symbol iterator.
      */
-    private var elemsCache: List[Symbol] = null
+    private[this] var elemsCache: List[Symbol] = null
 
     /** The synthesizer to be used, or `null` if no synthesis is done on this scope */
     private var synthesize: SymbolSynthesizer = null
@@ -409,7 +409,7 @@ object Scopes {
       while (e ne null) {
         if (e.sym is Implicit) {
           val d = e.sym.denot
-          irefs += TermRef.withSigAndDenot(NoPrefix, d.name.asTermName, d.signature, d)
+          irefs += TermRef(NoPrefix, d.symbol.asTerm).withDenot(d)
         }
         e = e.prev
       }

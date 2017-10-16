@@ -11,7 +11,7 @@ import Scopes._
 import ProtoTypes._
 import annotation.unchecked
 import util.Positions._
-import util.{Stats, SimpleMap}
+import util.{Stats, SimpleIdentityMap}
 import util.common._
 import Decorators._
 import Uniques._
@@ -31,7 +31,7 @@ object Inferencing {
    *  Variables that are successfully minimized do not count as uninstantiated.
    */
   def isFullyDefined(tp: Type, force: ForceDegree.Value)(implicit ctx: Context): Boolean = {
-    val nestedCtx = ctx.fresh.setNewTyperState
+    val nestedCtx = ctx.fresh.setNewTyperState()
     val result = new IsFullyDefinedAccumulator(force)(nestedCtx).process(tp)
     if (result) nestedCtx.typerState.commit()
     result
@@ -74,7 +74,7 @@ object Inferencing {
       typr.println(i"forced instantiation of ${tvar.origin} = $inst")
       inst
     }
-    private var toMaximize: Boolean = false
+    private[this] var toMaximize: Boolean = false
     def apply(x: Boolean, tp: Type): Boolean = tp.dealias match {
       case _: WildcardType | _: ProtoType =>
         false
@@ -196,7 +196,7 @@ object Inferencing {
       case tp: TypeRef =>
         val companion = tp.classSymbol.companionModule
         if (companion.exists)
-          companion.valRef.asSeenFrom(tp.prefix, companion.symbol.owner)
+          companion.termRef.asSeenFrom(tp.prefix, companion.symbol.owner)
         else NoType
       case _ => NoType
     }
@@ -286,7 +286,7 @@ object Inferencing {
     result
   }
 
-  type VarianceMap = SimpleMap[TypeVar, Integer]
+  type VarianceMap = SimpleIdentityMap[TypeVar, Integer]
 
   /** All occurrences of type vars in this type that satisfy predicate
    *  `include` mapped to their variances (-1/0/1) in this type, where
@@ -350,7 +350,7 @@ object Inferencing {
       if (vmap1 eq vmap) vmap else propagate(vmap1)
     }
 
-    propagate(accu(SimpleMap.Empty, tp))
+    propagate(accu(SimpleIdentityMap.Empty, tp))
   }
 }
 

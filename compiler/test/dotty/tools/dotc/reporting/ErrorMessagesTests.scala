@@ -970,4 +970,58 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       val MissingReturnTypeWithReturnStatement(method) :: Nil = messages
       assertEquals(method.name.show, "bad")
     }
+
+  @Test def noReturnInInline =
+    checkMessagesAfter("frontend") {
+      """class BadFunction {
+        |  @inline def usesReturn: Int = { return 42 }
+        |}
+      """.stripMargin
+    }.expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+
+      assertMessageCount(1, messages)
+
+      val NoReturnFromInline(method) :: Nil = messages
+      assertEquals("method usesReturn", method.show)
+    }
+
+  @Test def returnOutsideMethodDefinition =
+    checkMessagesAfter("frontend") {
+      """object A {
+        |  return 5
+        |}
+      """.stripMargin
+    }.expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+      assertMessageCount(1, messages)
+      val ReturnOutsideMethodDefinition(owner) :: Nil = messages
+      assertEquals("object A", owner.show)
+    }
+
+  @Test def extendFinalClass = checkMessagesAfter("refchecks") {
+    """final class A
+      |
+      |class B extends A
+    """.stripMargin
+  }.expect { (ictx, messages) =>
+    implicit val ctx: Context = ictx
+    assertMessageCount(1, messages)
+    val ExtendFinalClass(extender, parent) :: Nil = messages
+    assertEquals(extender.show, "class B")
+    assertEquals(parent.show, "class A")
+  }
+
+  @Test def enumCaseDefinitionInNonEnumOwner =
+    checkMessagesAfter("frontend") {
+      """object Qux {
+        |  case Foo
+        |}
+      """.stripMargin
+    }.expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+      assertMessageCount(1, messages)
+      val EnumCaseDefinitionInNonEnumOwner(owner) :: Nil = messages
+      assertEquals("object Qux", owner.show)
+    }
 }

@@ -14,7 +14,7 @@ import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._, Scopes._
 import util.Positions._
 import Decorators._
 import config.Printers.typr
-import Symbols._, TypeUtils._
+import Symbols._, TypeUtils._, SymUtils._
 import reporting.diagnostic.messages.SuperCallsNotAllowedInline
 
 /** A macro transform that runs immediately after typer and that performs the following functions:
@@ -54,16 +54,8 @@ import reporting.diagnostic.messages.SuperCallsNotAllowedInline
  *  mini-phase or subfunction of a macro phase equally well. But taken by themselves
  *  they do not warrant their own group of miniphases before pickling.
  */
-class PostTyper extends MacroTransform with SymTransformer  { thisTransformer =>
-
-
+class PostTyper extends MacroTransform with IdentityDenotTransformer { thisTransformer =>
   import tpd._
-
-  def transformSym(ref: SymDenotation)(implicit ctx: Context): SymDenotation = {
-    if (ref.is(BindDefinedType) && ctx.gadt.bounds.contains(ref.symbol)) {
-      ref.copySymDenotation(info = ctx.gadt.bounds.apply(ref.symbol) & ref.info)
-    } else ref
-  }
 
   /** the following two members override abstract members in Transform */
   override def phaseName: String = "posttyper"
@@ -88,22 +80,22 @@ class PostTyper extends MacroTransform with SymTransformer  { thisTransformer =>
     // TODO fill in
   }
 
-  /** If the type of `tree` is a TermRefWithSignature with an underdefined
+  /** If the type of `tree` is a TermRef with an underdefined
    *  signature, narrow the type by re-computing the signature (which should
    *  be fully-defined by now).
    */
   private def fixSignature[T <: Tree](tree: T)(implicit ctx: Context): T = tree.tpe match {
-    case tpe: TermRefWithSignature if tpe.signature.isUnderDefined =>
+    case tpe: TermRef if tpe.signature.isUnderDefined =>
       typr.println(i"fixing $tree with type ${tree.tpe.widen.toString} with sig ${tpe.signature} to ${tpe.widen.signature}")
-      tree.withType(TermRef.withSig(tpe.prefix, tpe.name, tpe.widen.signature)).asInstanceOf[T]
+      tree.withType(TermRef(tpe.prefix, tpe.name.withSig(tpe.widen.signature))).asInstanceOf[T]
     case _ => tree
   }
 
   class PostTyperTransformer extends Transformer {
 
-    private var inJavaAnnot: Boolean = false
+    private[this] var inJavaAnnot: Boolean = false
 
-    private var noCheckNews: Set[New] = Set()
+    private[this] var noCheckNews: Set[New] = Set()
 
     def withNoCheckNews[T](ts: List[New])(op: => T): T = {
       val saved = noCheckNews
@@ -124,14 +116,9 @@ class PostTyper extends MacroTransform with SymTransformer  { thisTransformer =>
     private def transformAnnot(annot: Annotation)(implicit ctx: Context): Annotation =
       annot.derivedAnnotation(transformAnnot(annot.tree))
 
-    private def registerChild(sym: Symbol, tp: Type)(implicit ctx: Context) = {
-      val cls = tp.classSymbol
-      if (cls.is(Sealed)) cls.addAnnotation(Annotation.makeChild(sym))
-    }
-
     private def transformMemberDef(tree: MemberDef)(implicit ctx: Context): Unit = {
       val sym = tree.symbol
-      if (sym.is(CaseVal, butNot = Method | Module)) registerChild(sym, sym.info)
+      sym.registerIfChild()
       sym.transformAnnotations(transformAnnot)
     }
 
@@ -257,14 +244,6 @@ class PostTyper extends MacroTransform with SymTransformer  { thisTransformer =>
               ctx.compilationUnit.source.exists &&
               sym != defn.SourceFileAnnot)
               sym.addAnnotation(Annotation.makeSourceFile(ctx.compilationUnit.source.file.path))
-
-            // Add Child annotation to sealed parents unless current class is anonymous
-            if (!sym.isAnonymousClass) // ignore anonymous class
-              sym.asClass.classParents.foreach { parent =>
-                val sym2 = if (sym.is(Module)) sym.sourceModule else sym
-                registerChild(sym2, parent)
-              }
-
             tree
           }
           super.transform(tree)
@@ -277,7 +256,7 @@ class PostTyper extends MacroTransform with SymTransformer  { thisTransformer =>
         case tree @ Annotated(annotated, annot) =>
           cpy.Annotated(tree)(transform(annotated), transformAnnot(annot))
         case tree: AppliedTypeTree =>
-          Checking.checkAppliedType(tree)
+          Checking.checkAppliedType(tree, boundsCheck = !ctx.mode.is(Mode.Pattern))
           super.transform(tree)
         case SingletonTypeTree(ref) =>
           Checking.checkRealizable(ref.tpe, ref.pos.focus)
@@ -302,6 +281,15 @@ class PostTyper extends MacroTransform with SymTransformer  { thisTransformer =>
             case _                                  =>
           }
           super.transform(tree)
+        case Typed(Ident(nme.WILDCARD), _) =>
+          super.transform(tree)(ctx.addMode(Mode.Pattern))
+            // The added mode signals that bounds in a pattern need not
+            // conform to selector bounds. I.e. assume
+            //     type Tree[T >: Null <: Type]
+            // One is still allowed to write
+            //     case x: Tree[_]
+            // (which translates to)
+            //     case x: (_: Tree[_])
         case tree =>
           super.transform(tree)
       }

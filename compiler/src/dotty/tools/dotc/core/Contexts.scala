@@ -17,7 +17,7 @@ import Comments._
 import util.Positions._
 import ast.Trees._
 import ast.untpd
-import util.{FreshNameCreator, SimpleMap, SourceFile, NoSource}
+import util.{FreshNameCreator, SimpleIdentityMap, SourceFile, NoSource}
 import typer.{Implicits, ImplicitRunInfo, ImportInfo, Inliner, NamerContextOps, SearchHistory, TypeAssigner, Typer}
 import Implicits.ContextualImplicits
 import config.Settings._
@@ -160,12 +160,12 @@ object Contexts {
     /** An optional diagostics buffer than is used by some checking code
      *  to provide more information in the buffer if it exists.
      */
-    private var _diagnostics: Option[StringBuilder] = _
+    private[this] var _diagnostics: Option[StringBuilder] = _
     protected def diagnostics_=(diagnostics: Option[StringBuilder]) = _diagnostics = diagnostics
     def diagnostics: Option[StringBuilder] = _diagnostics
 
     /** The current bounds in force for type parameters appearing in a GADT */
-    private var _gadt: GADTMap = _
+    private[this] var _gadt: GADTMap = _
     protected def gadt_=(gadt: GADTMap) = _gadt = gadt
     def gadt: GADTMap = _gadt
 
@@ -175,14 +175,14 @@ object Contexts {
     def freshNames: FreshNameCreator = _freshNames
 
     /** A map in which more contextual properties can be stored */
-    private var _moreProperties: Map[Key[Any], Any] = _
+    private[this] var _moreProperties: Map[Key[Any], Any] = _
     protected def moreProperties_=(moreProperties: Map[Key[Any], Any]) = _moreProperties = moreProperties
     def moreProperties: Map[Key[Any], Any] = _moreProperties
 
     def property[T](key: Key[T]): Option[T] =
       moreProperties.get(key).asInstanceOf[Option[T]]
 
-    private var _typeComparer: TypeComparer = _
+    private[this] var _typeComparer: TypeComparer = _
     protected def typeComparer_=(typeComparer: TypeComparer) = _typeComparer = typeComparer
     def typeComparer: TypeComparer = {
       if (_typeComparer.ctx ne this)
@@ -224,7 +224,7 @@ object Contexts {
     }
 
     /** The history of implicit searches that are currently active */
-    private var _searchHistory: SearchHistory = null
+    private[this] var _searchHistory: SearchHistory = null
     protected def searchHistory_= (searchHistory: SearchHistory) = _searchHistory = searchHistory
     def searchHistory: SearchHistory = _searchHistory
 
@@ -233,8 +233,8 @@ object Contexts {
       * phasedCtxs is array that uses phaseId's as indexes,
       * contexts are created only on request and cached in this array
       */
-    private var phasedCtx: Context = _
-    private var phasedCtxs: Array[Context] = _
+    private[this] var phasedCtx: Context = _
+    private[this] var phasedCtxs: Array[Context] = _
 
     /** This context at given phase.
      *  This method will always return a phase period equal to phaseId, thus will never return squashed phases
@@ -268,7 +268,7 @@ object Contexts {
     /** If -Ydebug is on, the top of the stack trace where this context
      *  was created, otherwise `null`.
      */
-    private var creationTrace: Array[StackTraceElement] = _
+    private[this] var creationTrace: Array[StackTraceElement] = _
 
     private def setCreationTrace() =
       if (this.settings.YtraceContextCreation.value)
@@ -393,7 +393,7 @@ object Contexts {
 
     /** A condensed context containing essential information of this but
      *  no outer contexts except the initial context.
-    private var _condensed: CondensedContext = null
+    private[this] var _condensed: CondensedContext = null
     def condensed: CondensedContext = {
       if (_condensed eq outer.condensed)
         _condensed = base.initialCtx.fresh
@@ -459,9 +459,9 @@ object Contexts {
     def setCompilerCallback(callback: CompilerCallback): this.type = { this.compilerCallback = callback; this }
     def setSbtCallback(callback: AnalysisCallback): this.type = { this.sbtCallback = callback; this }
     def setTyperState(typerState: TyperState): this.type = { this.typerState = typerState; this }
-    def setReporter(reporter: Reporter): this.type = setTyperState(typerState.withReporter(reporter))
-    def setNewTyperState: this.type = setTyperState(typerState.fresh(isCommittable = true))
-    def setExploreTyperState: this.type = setTyperState(typerState.fresh(isCommittable = false))
+    def setReporter(reporter: Reporter): this.type = setTyperState(typerState.fresh().setReporter(reporter))
+    def setNewTyperState(): this.type = setTyperState(typerState.fresh().setCommittable(true))
+    def setExploreTyperState(): this.type = setTyperState(typerState.fresh().setCommittable(false))
     def setPrinterFn(printer: Context => Printer): this.type = { this.printerFn = printer; this }
     def setOwner(owner: Symbol): this.type = { assert(owner != NoSymbol); this.owner = owner; this }
     def setSettings(sstate: SettingsState): this.type = { this.sstate = sstate; this }
@@ -476,6 +476,7 @@ object Contexts {
     def setRunInfo(runInfo: RunInfo): this.type = { this.runInfo = runInfo; this }
     def setDiagnostics(diagnostics: Option[StringBuilder]): this.type = { this.diagnostics = diagnostics; this }
     def setGadt(gadt: GADTMap): this.type = { this.gadt = gadt; this }
+    def setFreshGADTBounds: this.type = setGadt(new GADTMap(gadt.bounds))
     def setTypeComparerFn(tcfn: Context => TypeComparer): this.type = { this.typeComparer = tcfn(this); this }
     def setSearchHistory(searchHistory: SearchHistory): this.type = { this.searchHistory = searchHistory; this }
     def setFreshNames(freshNames: FreshNameCreator): this.type = { this.freshNames = freshNames; this }
@@ -493,7 +494,6 @@ object Contexts {
     def setSetting[T](setting: Setting[T], value: T): this.type =
       setSettings(setting.updateIn(sstate, value))
 
-    def setFreshGADTBounds: this.type = { this.gadt = new GADTMap(gadt.bounds); this }
 
     def setDebug = setSetting(base.settings.debug, true)
   }
@@ -520,7 +520,7 @@ object Contexts {
     outer = NoContext
     period = InitialPeriod
     mode = Mode.None
-    typerState = new TyperState(new ConsoleReporter())
+    typerState = new TyperState(null)
     printerFn = new RefinedPrinter(_)
     owner = NoSymbol
     sstate = settings.defaultState
@@ -532,7 +532,7 @@ object Contexts {
     moreProperties = Map.empty
     typeComparer = new TypeComparer(this)
     searchHistory = new SearchHistory(0, Map())
-    gadt = new GADTMap(SimpleMap.Empty)
+    gadt = EmptyGADTMap
   }
 
   @sharable object NoContext extends Context {
@@ -557,7 +557,7 @@ object Contexts {
     val loaders = new SymbolLoaders
 
     /** The platform, initialized by `initPlatform()`. */
-    private var _platform: Platform = _
+    private[this] var _platform: Platform = _
 
     /** The platform */
     def platform: Platform = {
@@ -606,6 +606,7 @@ object Contexts {
     /** A table for hash consing unique types */
     private[core] val uniques = new util.HashSet[Type](Config.initialUniquesCapacity) {
       override def hash(x: Type): Int = x.hash
+      override def isEqual(x: Type, y: Type) = x.eql(y)
     }
 
     /** A table for hash consing unique applied types */
@@ -614,13 +615,9 @@ object Contexts {
     /** A table for hash consing unique named types */
     private[core] val uniqueNamedTypes = new NamedTypeUniques
 
-    /** A table for hash consing unique symbolic named types */
-    private[core] val uniqueWithFixedSyms = new WithFixedSymUniques
-
     private def uniqueSets = Map(
         "uniques" -> uniques,
         "uniqueAppliedTypes" -> uniqueAppliedTypes,
-        "uniqueWithFixedSyms" -> uniqueWithFixedSyms,
         "uniqueNamedTypes" -> uniqueNamedTypes)
 
     /** A map that associates label and size of all uniques sets */
@@ -673,7 +670,7 @@ object Contexts {
     // Test that access is single threaded
 
     /** The thread on which `checkSingleThreaded was invoked last */
-    @sharable private var thread: Thread = null
+    @sharable private[this] var thread: Thread = null
 
     /** Check that we are on the same thread as before */
     def checkSingleThreaded() =
@@ -697,10 +694,14 @@ object Contexts {
     implicit val ctx: Context = initctx
   }
 
-  class GADTMap(initBounds: SimpleMap[Symbol, TypeBounds]) {
-    private var myBounds = initBounds
+  class GADTMap(initBounds: SimpleIdentityMap[Symbol, TypeBounds]) extends util.DotClass {
+    private[this] var myBounds = initBounds
     def setBounds(sym: Symbol, b: TypeBounds): Unit =
       myBounds = myBounds.updated(sym, b)
     def bounds = myBounds
+  }
+
+  @sharable object EmptyGADTMap extends GADTMap(SimpleIdentityMap.Empty) {
+    override def setBounds(sym: Symbol, b: TypeBounds) = unsupported("EmptyGADTMap.setBounds")
   }
 }

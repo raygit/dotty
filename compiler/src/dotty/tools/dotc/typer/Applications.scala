@@ -31,6 +31,7 @@ import TypeApplications._
 
 import language.implicitConversions
 import reporting.diagnostic.Message
+import reporting.trace
 import Constants.{Constant, IntTag, LongTag}
 
 import scala.collection.mutable.ListBuffer
@@ -384,7 +385,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
           val companion = cls.companionModule
           if (companion.isTerm) {
             val prefix = receiver.tpe.baseType(cls).normalizedPrefix
-            if (prefix.exists) selectGetter(ref(TermRef(prefix, companion.asTerm)))
+            if (prefix.exists) selectGetter(ref(TermRef.withSym(prefix, companion.asTerm)))
             else EmptyTree
           }
           else EmptyTree
@@ -438,16 +439,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
                 addTyped(arg, formal)
               case _ =>
                 val elemFormal = formal.widenExpr.argTypesLo.head
-                val origConstraint = ctx.typerState.constraint
-                var typedArgs = args.map(typedArg(_, elemFormal))
-                val harmonizedArgs = harmonizeArgs(typedArgs)
-                if (harmonizedArgs ne typedArgs) {
-                  ctx.typerState.constraint = origConstraint
-                    // reset constraint, we will re-establish constraint anyway when we
-                    // compare against the seqliteral. The reset is needed
-                    // otherwise pos/harmonize.scala would fail on line 40.
-                  typedArgs = harmonizedArgs
-                }
+                val typedArgs = harmonic(harmonizeArgs)(args.map(typedArg(_, elemFormal)))
                 typedArgs.foreach(addArg(_, elemFormal))
                 makeVarArg(args.length, elemFormal)
             }
@@ -544,9 +536,9 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
   extends Application(methRef, fun.tpe, args, resultType) {
     type TypedArg = Tree
     def isVarArg(arg: Trees.Tree[T]): Boolean = untpd.isWildcardStarArg(arg)
-    private var typedArgBuf = new mutable.ListBuffer[Tree]
-    private var liftedDefs: mutable.ListBuffer[Tree] = null
-    private var myNormalizedFun: Tree = fun
+    private[this] var typedArgBuf = new mutable.ListBuffer[Tree]
+    private[this] var liftedDefs: mutable.ListBuffer[Tree] = null
+    private[this] var myNormalizedFun: Tree = fun
     init()
 
     def addArg(arg: Tree, formal: Type): Unit =
@@ -557,7 +549,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
       typedArgBuf.trimEnd(n)
       val elemtpt = TypeTree(elemFormal)
       val seqLit =
-        if (methodType.isJava) JavaSeqLiteral(args, elemtpt)
+        if (methodType.isJavaMethod) JavaSeqLiteral(args, elemtpt)
         else SeqLiteral(args, elemtpt)
       typedArgBuf += seqToRepeated(seqLit)
     }
@@ -847,7 +839,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
     def followTypeAlias(tree: untpd.Tree): untpd.Tree = {
       tree match {
         case tree: untpd.RefTree =>
-          val nestedCtx = ctx.fresh.setNewTyperState
+          val nestedCtx = ctx.fresh.setNewTyperState()
           val ttree =
             typedType(untpd.rename(tree, tree.name.toTypeName))(nestedCtx)
           ttree.tpe match {
@@ -1002,26 +994,20 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
   /** Is given method reference applicable to type arguments `targs` and argument trees `args`?
    *  @param  resultType   The expected result type of the application
    */
-  def isApplicable(methRef: TermRef, targs: List[Type], args: List[Tree], resultType: Type)(implicit ctx: Context): Boolean = {
-    val nestedContext = ctx.fresh.setExploreTyperState
-    new ApplicableToTrees(methRef, targs, args, resultType)(nestedContext).success
-  }
+  def isApplicable(methRef: TermRef, targs: List[Type], args: List[Tree], resultType: Type)(implicit ctx: Context): Boolean =
+    ctx.typerState.test(new ApplicableToTrees(methRef, targs, args, resultType).success)
 
   /** Is given method reference applicable to type arguments `targs` and argument trees `args` without inferring views?
     *  @param  resultType   The expected result type of the application
     */
-  def isDirectlyApplicable(methRef: TermRef, targs: List[Type], args: List[Tree], resultType: Type)(implicit ctx: Context): Boolean = {
-    val nestedContext = ctx.fresh.setExploreTyperState
-    new ApplicableToTreesDirectly(methRef, targs, args, resultType)(nestedContext).success
-  }
+  def isDirectlyApplicable(methRef: TermRef, targs: List[Type], args: List[Tree], resultType: Type)(implicit ctx: Context): Boolean =
+    ctx.typerState.test(new ApplicableToTreesDirectly(methRef, targs, args, resultType).success)
 
   /** Is given method reference applicable to argument types `args`?
    *  @param  resultType   The expected result type of the application
    */
-  def isApplicable(methRef: TermRef, args: List[Type], resultType: Type)(implicit ctx: Context): Boolean = {
-    val nestedContext = ctx.fresh.setExploreTyperState
-    new ApplicableToTypes(methRef, args, resultType)(nestedContext).success
-  }
+  def isApplicable(methRef: TermRef, args: List[Type], resultType: Type)(implicit ctx: Context): Boolean =
+    ctx.typerState.test(new ApplicableToTypes(methRef, args, resultType).success)
 
   /** Is given type applicable to type arguments `targs` and argument trees `args`,
    *  possibly after inserting an `apply`?
@@ -1060,7 +1046,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
    *   - The nesting levels of A1 and A2 are the same, and A1's owner derives from A2's owner
    *   - A1's type is more specific than A2's type.
    */
-  def isAsGood(alt1: TermRef, alt2: TermRef, nesting1: Int = 0, nesting2: Int = 0)(implicit ctx: Context): Boolean = track("isAsGood") { ctx.traceIndented(i"isAsGood($alt1, $alt2)", overload) {
+  def isAsGood(alt1: TermRef, alt2: TermRef, nesting1: Int = 0, nesting2: Int = 0)(implicit ctx: Context): Boolean = track("isAsGood") { trace(i"isAsGood($alt1, $alt2)", overload) {
 
     assert(alt1 ne alt2)
 
@@ -1087,7 +1073,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
      *       b. as specific as a member of any other type `tp2` if `tp1` is compatible
      *          with `tp2`.
      */
-    def isAsSpecific(alt1: TermRef, tp1: Type, alt2: TermRef, tp2: Type): Boolean = ctx.traceIndented(i"isAsSpecific $tp1 $tp2", overload) { tp1 match {
+    def isAsSpecific(alt1: TermRef, tp1: Type, alt2: TermRef, tp2: Type): Boolean = trace(i"isAsSpecific $tp1 $tp2", overload) { tp1 match {
       case tp1: MethodType => // (1)
         val formals1 =
           if (tp1.isVarArgsMethod && tp2.isVarArgsMethod) tp1.paramInfos.map(_.repeatedToSingle)
@@ -1095,19 +1081,28 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
         isApplicable(alt2, formals1, WildcardType) ||
         tp1.paramInfos.isEmpty && tp2.isInstanceOf[LambdaType]
       case tp1: PolyType => // (2)
-        val tparams = ctx.newTypeParams(alt1.symbol, tp1.paramNames, EmptyFlags, tp1.instantiateBounds)
-        isAsSpecific(alt1, tp1.instantiate(tparams.map(_.typeRef)), alt2, tp2)
+        val nestedCtx = ctx.fresh.setExploreTyperState()
+
+        {
+          implicit val ctx = nestedCtx
+
+          // Fully define the PolyType parameters so that the infos of the
+          // tparams created below never contain TypeRefs whose underling types
+          // contain uninstantiated TypeVars, this could lead to cycles in
+          // `isSubType` as a TypeVar might get constrained by a TypeRef it's
+          // part of.
+          val tp1Params = tp1.newLikeThis(tp1.paramNames, tp1.paramInfos, defn.AnyType)
+          fullyDefinedType(tp1Params, "type parameters of alternative", alt1.symbol.pos)
+
+          val tparams = ctx.newTypeParams(alt1.symbol, tp1.paramNames, EmptyFlags, tp1.instantiateBounds)
+          isAsSpecific(alt1, tp1.instantiate(tparams.map(_.typeRef)), alt2, tp2)
+        }
       case _ => // (3)
         tp2 match {
           case tp2: MethodType => true // (3a)
           case tp2: PolyType if tp2.resultType.isInstanceOf[MethodType] => true // (3a)
           case tp2: PolyType => // (3b)
-            val nestedCtx = ctx.fresh.setExploreTyperState
-
-            {
-              implicit val ctx = nestedCtx
-              isAsSpecificValueType(tp1, constrained(tp2).resultType)
-            }
+            ctx.typerState.test(isAsSpecificValueType(tp1, constrained(tp2).resultType))
           case _ => // (3b)
             isAsSpecificValueType(tp1, tp2)
         }
@@ -1160,7 +1155,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
 
     /** Drop any implicit parameter section */
     def stripImplicit(tp: Type): Type = tp match {
-      case mt: ImplicitMethodType =>
+      case mt: MethodType if mt.isImplicitMethod =>
         resultTypeApprox(mt)
       case pt: PolyType =>
         pt.derivedLambdaType(pt.paramNames, pt.paramInfos, stripImplicit(pt.resultType))
@@ -1257,22 +1252,20 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
      *  probability of pruning the search. result type comparisons are neither cheap nor
      *  do they prune much, on average.
      */
-    def adaptByResult(chosen: TermRef) = {
-      def nestedCtx = ctx.fresh.setExploreTyperState
-      pt match {
-        case pt: FunProto if !resultConforms(chosen, pt.resultType)(nestedCtx) =>
-          alts.filter(alt =>
-            (alt ne chosen) && resultConforms(alt, pt.resultType)(nestedCtx)) match {
-            case Nil => chosen
-            case alt2 :: Nil => alt2
-            case alts2 =>
-              resolveOverloaded(alts2, pt) match {
-                case alt2 :: Nil => alt2
-                case _ => chosen
-              }
-          }
-        case _ => chosen
-      }
+    def adaptByResult(chosen: TermRef) = pt match {
+      case pt: FunProto if !ctx.typerState.test(resultConforms(chosen, pt.resultType)) =>
+        val conformingAlts = alts.filter(alt =>
+          (alt ne chosen) && ctx.typerState.test(resultConforms(alt, pt.resultType)))
+        conformingAlts match {
+          case Nil => chosen
+          case alt2 :: Nil => alt2
+          case alts2 =>
+            resolveOverloaded(alts2, pt) match {
+              case alt2 :: Nil => alt2
+              case _ => chosen
+            }
+        }
+      case _ => chosen
     }
 
     var found = resolveOverloaded(alts, pt, Nil)(ctx.retractMode(Mode.ImplicitsEnabled))
@@ -1505,6 +1498,23 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
       case _ => adaptInterpolated(tree, pt)
     }
     if (ctx.isAfterTyper) trees else harmonizeWith(trees)(_.tpe, adapt)
+  }
+
+  /** Apply a transformation `harmonize` on the results of operation `op`.
+   *  If the result is different (wrt eq) from the original results of `op`,
+   *  revert back to the constraint in force before computing `op`.
+   *  This reset is needed because otherwise the original results might
+   *  have added constraints to type parameters which are no longer
+   *  implied after harmonization. No essential constraints are lost by this because
+   *  the result of harmomization will be compared again with the expected type.
+   *  Test cases where this matters are in pos/harmomize.scala.
+   */
+  def harmonic[T](harmonize: List[T] => List[T])(op: => List[T])(implicit ctx: Context) = {
+    val origConstraint = ctx.typerState.constraint
+    val origElems = op
+    val harmonizedElems = harmonize(origElems)
+    if (harmonizedElems ne origElems) ctx.typerState.constraint = origConstraint
+    harmonizedElems
   }
 
   /** If all `types` are numeric value types, and they are not all the same type,

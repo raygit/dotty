@@ -13,9 +13,10 @@ import StdNames._
 import Annotations._
 import annotation.tailrec
 import config.Config
-import util.{SimpleMap, Property}
+import util.Property
 import collection.mutable
 import ast.tpd._
+import reporting.trace
 
 trait TypeOps { this: Context => // TODO: Make standalone object.
 
@@ -33,7 +34,7 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
       /** Map a `C.this` type to the right prefix. If the prefix is unstable, and
        *  the current variance is <= 0, return a range.
        */
-      def toPrefix(pre: Type, cls: Symbol, thiscls: ClassSymbol): Type = /*>|>*/ ctx.conditionalTraceIndented(TypeOps.track, s"toPrefix($pre, $cls, $thiscls)") /*<|<*/ {
+      def toPrefix(pre: Type, cls: Symbol, thiscls: ClassSymbol): Type = /*>|>*/ trace.conditionally(TypeOps.track, s"toPrefix($pre, $cls, $thiscls)", show = true) /*<|<*/ {
         if ((pre eq NoType) || (pre eq NoPrefix) || (cls is PackageClass))
           tp
         else pre match {
@@ -49,7 +50,7 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
         }
       }
 
-      /*>|>*/ ctx.conditionalTraceIndented(TypeOps.track, s"asSeen ${tp.show} from (${pre.show}, ${cls.show})", show = true) /*<|<*/ { // !!! DEBUG
+      /*>|>*/ trace.conditionally(TypeOps.track, s"asSeen ${tp.show} from (${pre.show}, ${cls.show})", show = true) /*<|<*/ { // !!! DEBUG
         // All cases except for ThisType are the same as in Map. Inlined for performance
         // TODO: generalize the inlining trick?
         tp match {
@@ -131,7 +132,7 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
 
     /** a faster version of cs1 intersect cs2 */
     def intersect(cs1: List[ClassSymbol], cs2: List[ClassSymbol]): List[ClassSymbol] = {
-      val cs2AsSet = new util.HashSet[ClassSymbol](100)
+      val cs2AsSet = new util.HashSet[ClassSymbol](128)
       cs2.foreach(cs2AsSet.addEntry)
       cs1.filter(cs2AsSet.contains)
     }
@@ -164,9 +165,9 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
                 ctx.typeComparer.lubArgs(args1, args2, tycon1.typeParams))
             case _ => fail
           }
-        case tp1 @ TypeRef(pre1, name1) =>
+        case tp1 @ TypeRef(pre1, _) =>
           tp2 match {
-            case tp2 @ TypeRef(pre2, `name1`) =>
+            case tp2 @ TypeRef(pre2, _) if tp1.name eq tp2.name =>
               tp1.derivedSelect(pre1 | pre2)
             case _ => fail
           }
@@ -219,7 +220,7 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
   def makePackageObjPrefixExplicit(tpe: NamedType): Type = {
     def tryInsert(pkgClass: SymDenotation): Type = pkgClass match {
       case pkgCls: PackageClassDenotation if !(tpe.symbol.maybeOwner is Package) =>
-        tpe.derivedSelect(pkgCls.packageObj.valRef)
+        tpe.derivedSelect(pkgCls.packageObj.termRef)
       case _ =>
         tpe
     }

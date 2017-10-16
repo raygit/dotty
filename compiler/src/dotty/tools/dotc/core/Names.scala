@@ -9,13 +9,11 @@ import Texts.Text
 import Decorators._
 import Contexts.Context
 import StdNames.str
+import Designators._
 import util.Chars.isIdentifierStart
 import collection.IndexedSeqOptimized
-import collection.generic.CanBuildFrom
-import collection.mutable.{ Builder, StringBuilder, AnyRefMap }
-import collection.immutable.WrappedString
-import collection.generic.CanBuildFrom
-import util.{DotClass, SimpleMap}
+import collection.immutable
+import util.{DotClass}
 import config.Config
 import java.util.HashMap
 
@@ -37,7 +35,7 @@ object Names {
    *  in a name table. A derived term name adds a tag, and possibly a number
    *  or a further simple name to some other name.
    */
-  abstract class Name extends DotClass with PreName {
+  abstract class Name extends Designator with PreName {
 
     /** A type for names of the same kind as this name */
     type ThisName <: Name
@@ -153,6 +151,12 @@ object Names {
     /** Does (the last part of) this name end with `str`? */
     def endsWith(str: String): Boolean = lastPart.endsWith(str)
 
+    /** Designator overrides */
+    override def isTerm(implicit ctx: Context) = isTermName
+    override def isType(implicit ctx: Context) = isTypeName
+    override def asTerm(implicit ctx: Context) = asTermName
+    override def asType(implicit ctx: Context) = asTypeName
+
     override def hashCode = System.identityHashCode(this)
     override def equals(that: Any) = this eq that.asInstanceOf[AnyRef]
   }
@@ -185,24 +189,24 @@ object Names {
     def underlying: TermName = unsupported("underlying")
 
     @sharable // because of synchronized block in `and`
-    private var derivedNames: AnyRef /* SimpleMap | j.u.HashMap */ =
-      SimpleMap.Empty[NameInfo]
+    private[this] var derivedNames: AnyRef /* immutable.Map[NameInfo, DerivedName] | j.u.HashMap */ =
+      immutable.Map.empty[NameInfo, DerivedName]
 
     private def getDerived(info: NameInfo): DerivedName /* | Null */= derivedNames match {
-      case derivedNames: SimpleMap[NameInfo, DerivedName] @unchecked =>
-        derivedNames(info)
+      case derivedNames: immutable.AbstractMap[NameInfo, DerivedName] @unchecked =>
+        if (derivedNames.contains(info)) derivedNames(info) else null
       case derivedNames: HashMap[NameInfo, DerivedName] @unchecked =>
         derivedNames.get(info)
     }
 
     private def putDerived(info: NameInfo, name: DerivedName): name.type = {
       derivedNames match {
-        case derivedNames: SimpleMap[NameInfo, DerivedName] @unchecked =>
+        case derivedNames: immutable.Map[NameInfo, DerivedName] @unchecked =>
           if (derivedNames.size < 4)
             this.derivedNames = derivedNames.updated(info, name)
           else {
             val newMap = new HashMap[NameInfo, DerivedName]
-            derivedNames.foreachBinding(newMap.put(_, _))
+            derivedNames.foreach { case (k, v) => newMap.put(k, v) }
             newMap.put(info, name)
             this.derivedNames = newMap
           }
@@ -533,15 +537,15 @@ object Names {
 
   /** The number of characters filled. */
   @sharable // because it's only mutated in synchronized block of termName
-  private var nc = 0
+  private[this] var nc = 0
 
   /** Hashtable for finding term names quickly. */
   @sharable // because it's only mutated in synchronized block of termName
-  private var table = new Array[SimpleName](InitialHashSize)
+  private[this] var table = new Array[SimpleName](InitialHashSize)
 
   /** The number of defined names. */
   @sharable // because it's only mutated in synchronized block of termName
-  private var size = 1
+  private[this] var size = 1
 
   /** The hash of a name made of from characters cs[offset..offset+len-1].  */
   private def hashValue(cs: Array[Char], offset: Int, len: Int): Int =

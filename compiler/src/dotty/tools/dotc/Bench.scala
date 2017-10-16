@@ -1,7 +1,3 @@
-/* NSC -- new Scala compiler
- * Copyright 2005-2013 LAMP/EPFL
- * @author  Martin Odersky
- */
 package dotty.tools
 package dotc
 
@@ -14,7 +10,7 @@ import reporting.Reporter
  */
 object Bench extends Driver {
 
-  @sharable private var numRuns = 1
+  @sharable private[this] var numRuns = 1
 
   private def ntimes(n: Int)(op: => Reporter): Reporter =
     (emptyReporter /: (0 until n)) ((_, _) => op)
@@ -24,6 +20,11 @@ object Bench extends Driver {
       val start = System.nanoTime()
       val r = super.doCompile(compiler, fileNames)
       println(s"time elapsed: ${(System.nanoTime - start) / 1000000}ms")
+      if (ctx.settings.prompt.value) {
+        print("hit <return> to continue >")
+        System.in.read()
+        println()
+      }
       r
     }
 

@@ -14,14 +14,14 @@ import collection.mutable
 
   var monitored = false
 
-  @volatile private var stack: List[String] = Nil
+  @volatile private[this] var stack: List[String] = Nil
 
   val hits = new mutable.HashMap[String, Int] {
     override def default(key: String): Int = 0
   }
 
   @inline
-  def record(fn: String, n: Int = 1) =
+  def record(fn: => String, n: => Int = 1) =
     if (enabled) doRecord(fn, n)
 
   private def doRecord(fn: String, n: Int) =

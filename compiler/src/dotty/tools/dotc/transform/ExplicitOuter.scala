@@ -11,7 +11,6 @@ import core.Decorators._
 import core.StdNames.nme
 import core.Names._
 import core.NameOps._
-import core.NameKinds.OuterSelectName
 import ast.Trees._
 import SymUtils._
 import dotty.tools.dotc.ast.tpd
@@ -61,14 +60,6 @@ class ExplicitOuter extends MiniPhaseTransform with InfoTransformer { thisTransf
   }
 
   override def mayChange(sym: Symbol)(implicit ctx: Context): Boolean = sym.isClass
-
-  /** Convert a selection of the form `qual.C_<OUTER>` to an outer path from `qual` to `C` */
-  override def transformSelect(tree: Select)(implicit ctx: Context, info: TransformerInfo) =
-    tree.name match {
-      case OuterSelectName(_, nhops) =>
-        outer.path(start = tree.qualifier, count = nhops).ensureConforms(tree.tpe)
-      case _ => tree
-    }
 
   /** First, add outer accessors if a class does not have them yet and it references an outer this.
    *  If the class has outer accessors, implement them.
@@ -321,7 +312,7 @@ object ExplicitOuter {
    */
   private def fixThis(tpe: Type)(implicit ctx: Context): Type = tpe match {
     case tpe: ThisType if tpe.cls.is(Module) && !ctx.owner.isContainedIn(tpe.cls) =>
-      fixThis(TermRef(tpe.cls.owner.thisType, tpe.cls.sourceModule.asTerm))
+      fixThis(tpe.cls.owner.thisType.select(tpe.cls.sourceModule.asTerm))
     case tpe: TermRef =>
       tpe.derivedSelect(fixThis(tpe.prefix))
     case _ =>

@@ -22,7 +22,8 @@ object Flags {
       else if (that.bits == 0) this
       else {
         val tbits = bits & that.bits & KINDFLAGS
-        assert(tbits != 0, s"illegal flagset combination: $this and $that")
+        if (tbits == 0)
+          assert(false, s"illegal flagset combination: $this and $that")
         FlagSet(tbits | ((this.bits | that.bits) & ~KINDFLAGS))
       }
 
@@ -359,8 +360,8 @@ object Flags {
 
   // Flags following this one are not pickled
 
-  /** Symbol always defines a fresh named type */
-  final val Fresh = commonFlag(45, "<fresh>")
+  /** Symbol is not a member of its owner */
+  final val NonMember = commonFlag(45, "<non-member>")
 
   /** Denotation is in train of being loaded and completed, used to catch cyclic dependencies */
   final val Touched = commonFlag(48, "<touched>")
@@ -446,7 +447,7 @@ object Flags {
     Module | Package | Deferred | MethodOrHKCommon | Param | ParamAccessor.toCommonFlags |
     Scala2ExistentialCommon | Mutable.toCommonFlags | Touched | JavaStatic |
     CovariantOrOuter | ContravariantOrLabel | CaseAccessor.toCommonFlags |
-    Fresh | Erroneous | ImplicitCommon | Permanent | Synthetic |
+    NonMember | Erroneous | ImplicitCommon | Permanent | Synthetic |
     SuperAccessorOrScala2x | Inline
 
   /** Flags guaranteed to be set upon symbol creation, or, if symbol is a top-level

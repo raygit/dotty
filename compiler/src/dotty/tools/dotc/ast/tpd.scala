@@ -6,7 +6,7 @@ import dotty.tools.dotc.transform.{ExplicitOuter, Erasure}
 import dotty.tools.dotc.typer.ProtoTypes.FunProtoTyped
 import transform.SymUtils._
 import core._
-import util.Positions._, Types._, Contexts._, Constants._, Names._, Flags._
+import util.Positions._, Types._, Contexts._, Constants._, Names._, Flags._, NameOps._
 import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._, Symbols._
 import Denotations._, Decorators._, DenotTransformers._
 import collection.mutable
@@ -195,7 +195,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     def valueParamss(tp: Type): (List[List[TermSymbol]], Type) = tp match {
       case tp: MethodType =>
         def valueParam(name: TermName, info: Type): TermSymbol = {
-          val maybeImplicit = if (tp.isInstanceOf[ImplicitMethodType]) Implicit else EmptyFlags
+          val maybeImplicit = if (tp.isImplicitMethod) Implicit else EmptyFlags
           ctx.newSymbol(sym, name, TermParam | maybeImplicit, info)
         }
         val params = (tp.paramNames, tp.paramInfos).zipped.map(valueParam)
@@ -243,7 +243,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     val localDummy = ((NoSymbol: Symbol) /: body)(findLocalDummy.apply)
       .orElse(ctx.newLocalDummy(cls))
     val impl = untpd.Template(constr, parents, selfType, newTypeParams ++ body)
-      .withType(localDummy.nonMemberTermRef)
+      .withType(localDummy.termRef)
     ta.assignType(untpd.TypeDef(cls.name, impl), cls)
   }
 
@@ -382,7 +382,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     val targs = tp.argTypes
     val tycon = tp.typeConstructor
     New(tycon)
-      .select(TermRef.withSig(tycon, constr))
+      .select(TermRef.withSym(tycon, constr))
       .appliedToTypes(targs)
       .appliedToArgs(args)
   }
@@ -702,16 +702,14 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
           TypeRef(tree.tpe, sym.name.asTypeName)
         }
         else
-          TermRef.withSigAndDenot(tree.tpe, sym.name.asTermName,
-            sym.signature, sym.denot.asSeenFrom(tree.tpe))
-      untpd.Select(tree, sym.name)
-        .withType(tp)
+          TermRef(tree.tpe, sym.name.asTermName, sym.denot.asSeenFrom(tree.tpe))
+      untpd.Select(tree, sym.name).withType(tp)
     }
 
     /** A select node with the given selector name and signature and a computed type */
     def selectWithSig(name: Name, sig: Signature)(implicit ctx: Context): Tree =
       untpd.SelectWithSig(tree, name, sig)
-        .withType(TermRef.withSig(tree.tpe, name.asTermName, sig))
+        .withType(TermRef(tree.tpe, name.asTermName.withSig(sig)))
 
     /** A select node with selector name and signature taken from `sym`.
      *  Note: Use this method instead of select(sym) if the referenced symbol
@@ -828,7 +826,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
      *  @param tp      The type of the destination of the outer path.
      */
     def outerSelect(levels: Int, tp: Type)(implicit ctx: Context): Tree =
-      untpd.Select(tree, OuterSelectName(EmptyTermName, levels)).withType(tp)
+      untpd.Select(tree, OuterSelectName(EmptyTermName, levels)).withType(SkolemType(tp))
 
     // --- Higher order traversal methods -------------------------------
 
@@ -919,7 +917,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
       }
       else denot.asSingleDenotation.termRef
     val fun = receiver
-      .select(TermRef.withSig(receiver.tpe, selected.termSymbol.asTerm))
+      .select(TermRef.withSym(receiver.tpe, selected.termSymbol.asTerm))
       .appliedToTypes(targs)
 
     def adaptLastArg(lastParam: Tree, expectedType: Type) = {
@@ -977,22 +975,6 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     def unapply(tree: Tree): Option[(Tree, List[Tree])] = tree match {
       case TypeApply(tree, targs) => Some(tree, targs)
       case _ => Some(tree, Nil)
-    }
-  }
-
-  /** A traverser that passes the enclosing class or method as an argument
-   *  to the traverse method.
-   */
-  abstract class EnclosingMethodTraverser extends TreeAccumulator[Symbol] {
-    def traverse(enclMeth: Symbol, tree: Tree)(implicit ctx: Context): Unit
-    def apply(enclMeth: Symbol, tree: Tree)(implicit ctx: Context) = {
-      tree match {
-        case _: DefTree if tree.symbol.exists =>
-          traverse(tree.symbol.enclosingMethod, tree)
-        case _ =>
-          traverse(enclMeth, tree)
-      }
-      enclMeth
     }
   }
 

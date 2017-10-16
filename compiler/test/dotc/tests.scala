@@ -1,6 +1,7 @@
 package dotc
 
 import dotty.Jars
+import dotty.LegacyTests
 import dotty.tools.dotc.CompilerTest
 import dotty.tools.StdLibSources
 import org.junit.experimental.categories.Category
@@ -15,7 +16,7 @@ import scala.io.Source
  *  =======
  *  These are legacy, do not add tests here, see `CompilationTests.scala`
  */
-@Category(Array(classOf[java.lang.Exception]))
+@Category(Array(classOf[LegacyTests]))
 class tests extends CompilerTest {
 
   // tests that match regex '(pos|dotc|run|java|compileStdLib)\.*' would be
@@ -167,7 +168,6 @@ class tests extends CompilerTest {
 
   @Test def rewrites = compileFile(posScala2Dir, "rewrites", "-rewrite" :: scala2mode)
 
-  @Test def pos_t8146a = compileFile(posSpecialDir, "t8146a")(allowDeepSubtypes)
   @Test def pos_jon = compileFile(posSpecialDir, "jon")(allowDeepSubtypes)
 
   @Test def pos_t5545 = {
