@@ -1646,13 +1646,11 @@ object SymDenotations {
           case tp @ AppliedType(tycon, args) =>
             val subsym = tycon.typeSymbol
             if (subsym eq symbol) tp
-            else subsym.denot match {
-              case clsd: ClassDenotation =>
-                val tparams = clsd.typeParams
-                if (tparams.hasSameLengthAs(args)) baseTypeOf(tycon).subst(tparams, args)
-                else NoType
-              case _ =>
+            else tycon.typeParams match {
+              case LambdaParam(_, _) :: _ =>
                 baseTypeOf(tp.superType)
+              case tparams: List[Symbol @unchecked] =>
+                baseTypeOf(tycon).subst(tparams, args)
             }
           case tp: TypeProxy =>
             baseTypeOf(tp.superType)
@@ -1753,7 +1751,7 @@ object SymDenotations {
      *  Both getters and setters are returned in this list.
      */
     def paramAccessors(implicit ctx: Context): List[Symbol] =
-      unforcedDecls.filter(_.is(ParamAccessor)).toList
+      unforcedDecls.filter(_.is(ParamAccessor))
 
     /** If this class has the same `decls` scope reference in `phase` and
      *  `phase.next`, install a new denotation with a cloned scope in `phase.next`.
