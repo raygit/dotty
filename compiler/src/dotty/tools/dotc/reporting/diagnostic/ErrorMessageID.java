@@ -102,6 +102,14 @@ public enum ErrorMessageID {
     UncheckedTypePatternID,
     ExtendFinalClassID,
     EnumCaseDefinitionInNonEnumOwnerID,
+    ExpectedTypeBoundOrEqualsID,
+    ClassAndCompanionNameClashID,
+    TailrecNotApplicableID,
+    FailureToEliminateExistentialID,
+    OnlyFunctionsCanBeFollowedByUnderscoreID,
+    MissingEmptyArgumentListID,
+    DuplicateNamedTypeParameterID,
+    UndefinedNamedTypeParameterID
     ;
 
     public int errorNumber() {

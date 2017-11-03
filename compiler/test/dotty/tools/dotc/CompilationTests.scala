@@ -182,6 +182,7 @@ class CompilationTests extends ParallelTesting {
     compileFile("../tests/neg/tailcall/tailrec.scala", defaultOptions) +
     compileFile("../tests/neg/tailcall/tailrec-2.scala", defaultOptions) +
     compileFile("../tests/neg/tailcall/tailrec-3.scala", defaultOptions) +
+    compileFile("../tests/neg/i3246.scala", scala2Mode) +
     compileDir("../tests/neg/typedIdents", defaultOptions)
   }.checkExpectedErrors()
 
@@ -190,6 +191,12 @@ class CompilationTests extends ParallelTesting {
   @Test def runAll: Unit = {
     compileFilesInDir("../tests/run", defaultOptions) +
     compileFilesInDir("../tests/run-no-optimise", defaultOptions)
+  }.checkRuns()
+
+  // Generic java signatures tests ---------------------------------------------
+
+  @Test def genericJavaSignatures: Unit = {
+    compileFilesInDir("../tests/generic-java-signatures", defaultOptions)
   }.checkRuns()
 
   // Pickling Tests ------------------------------------------------------------
