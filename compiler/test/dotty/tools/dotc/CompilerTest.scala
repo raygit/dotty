@@ -6,7 +6,7 @@ import reporting._
 import diagnostic.MessageContainer
 import util.SourcePosition
 import config.CompilerCommand
-import dotty.tools.io.PlainFile
+import dotty.tools.io.{PlainFile, Path}
 import scala.collection.mutable.ListBuffer
 import dotty.tools.io.{ Path, Directory, File => SFile, AbstractFile }
 import scala.annotation.tailrec
@@ -44,7 +44,7 @@ abstract class CompilerTest {
     if (runTest)
       log(s"WARNING: run tests can only be run by partest, JUnit just verifies compilation: $prefix$fileName$extension")
     if (args.contains("-rewrite")) {
-      val file = new PlainFile(filePath)
+      val file = new PlainFile(Path(filePath))
       val data = file.toByteArray
       // compile with rewrite
       compileArgs((filePath :: args).toArray, expErrors)
@@ -121,7 +121,7 @@ abstract class CompilerTest {
   def compileFiles(path: String, args: List[String] = Nil, verbose: Boolean = true, runTest: Boolean = false,
                    compileSubDirs: Boolean = true)(implicit defaultOptions: List[String]): Unit = {
     val dir = Directory(path)
-    val fileNames = dir.files.toArray.map(_.jfile.getName).filter(name => (name endsWith ".scala") || (name endsWith ".java"))
+    val fileNames = dir.files.toArray.map(_.name).filter(name => (name endsWith ".scala") || (name endsWith ".java"))
     for (name <- fileNames) {
       if (verbose) log(s"testing $path$name")
       compileFile(path, name, args, "", runTest)
@@ -129,7 +129,7 @@ abstract class CompilerTest {
     if (compileSubDirs)
       for (subdir <- dir.dirs) {
         if (verbose) log(s"testing $subdir")
-        compileDir(path, subdir.jfile.getName, args, runTest)
+        compileDir(path, subdir.name, args, runTest)
       }
   }
   def runFiles(path: String, args: List[String] = Nil, verbose: Boolean = true)
@@ -338,7 +338,7 @@ abstract class CompilerTest {
     @tailrec def copyfile(file: SFile, bytewise: Boolean): Unit = {
       if (bytewise) {
         val in = file.inputStream()
-        val out = SFile(dest).outputStream()
+        val out = dest.toFile.outputStream()
         val buffer = new Array[Byte](1024)
         @tailrec def loop(available: Int):Unit = {
           if (available < 0) {()}
@@ -353,7 +353,7 @@ abstract class CompilerTest {
         out.close()
       } else {
         try {
-          SFile(dest)(scala.io.Codec.UTF8).writeAll((s"/* !!!!! WARNING: DO NOT MODIFY. Original is at: $file !!!!! */").replace("\\", "/"), file.slurp("UTF-8"))
+          SFile(dest.jpath)(scala.io.Codec.UTF8).writeAll((s"/* !!!!! WARNING: DO NOT MODIFY. Original is at: $file !!!!! */").replace("\\", "/"), file.slurp("UTF-8"))
         } catch {
           case unmappable: java.nio.charset.MalformedInputException =>
             copyfile(file, true) //there are bytes that can't be mapped with UTF-8. Bail and just do a straight byte-wise copy without the warning header.
@@ -363,13 +363,13 @@ abstract class CompilerTest {
 
     processFileDir(sourceFile, { sf =>
       if (extensionsToCopy.contains(sf.extension)) {
-        dest.parent.jfile.mkdirs
+        dest.parent.createDirectory(force = true)
         copyfile(sf, false)
       } else {
         log(s"WARNING: ignoring $sf")
       }
     }, { sdir =>
-      dest.jfile.mkdirs
+      dest.createDirectory(force = true)
       sdir.list.foreach(path => recCopyFiles(path, dest / path.name))
     }, Some("DPCompilerTest.recCopyFiles: sourceFile not found: " + sourceFile))
   }
@@ -390,7 +390,7 @@ abstract class CompilerTest {
       if (!genSrc.isDefined) {
         NotExists
       } else {
-        val source = processFileDir(sourceFile, { f => try Some(f.slurp("UTF8")) catch {case _: java.io.IOException => None} }, { d => Some("") },
+        val source = processFileDir(Path(sourceFile.toPath), { f => try Some(f.slurp("UTF8")) catch {case _: java.io.IOException => None} }, { d => Some("") },
             Some("DPCompilerTest sourceFile doesn't exist: " + sourceFile)).get
         if (source == genSrc) {
           nerr match {

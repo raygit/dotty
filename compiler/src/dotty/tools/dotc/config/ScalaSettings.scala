@@ -18,7 +18,7 @@ class ScalaSettings extends Settings.SettingGroup {
   val javaextdirs = PathSetting("-javaextdirs", "Override java extdirs classpath.", Defaults.javaExtDirs)
   val sourcepath = PathSetting("-sourcepath", "Specify location(s) of source files.", "") // Defaults.scalaSourcePath
   val classpath = PathSetting("-classpath", "Specify where to find user class files.", defaultClasspath) withAbbreviation "-cp"
-  val outputDir = DirectorySetting("-d", "directory|jar", "destination for generated classfiles.", Directory(Path(".")))
+  val outputDir = PathSetting("-d", "directory|jar", "destination for generated classfiles.", ".")
   val priorityclasspath = PathSetting("-priorityclasspath", "class path that takes precedence over all other paths (or testing only)", "")
 
   /** Other settings */
@@ -26,7 +26,6 @@ class ScalaSettings extends Settings.SettingGroup {
   val migration = BooleanSetting("-migration", "Emit warning and location for migration issues from Scala 2.")
   val encoding = StringSetting("-encoding", "encoding", "Specify character encoding used by source files.", Properties.sourceEncoding)
   val explainTypes = BooleanSetting("-explain-types", "Explain type errors in more detail.")
-  val explainImplicits = BooleanSetting("-explain-implicits", "Explain implicit search errors in more detail.")
   val explain = BooleanSetting("-explain", "Explain errors in more detail.")
   val feature = BooleanSetting("-feature", "Emit warning and location for usages of features that should be imported explicitly.")
   val help = BooleanSetting("-help", "Print a synopsis of standard options")
@@ -43,6 +42,7 @@ class ScalaSettings extends Settings.SettingGroup {
   val language = MultiStringSetting("-language", "feature", "Enable one or more language features.")
   val rewrite = OptionSetting[Rewrites]("-rewrite", "When used in conjunction with -language:Scala2 rewrites sources to migrate to new syntax")
   val silentWarnings = BooleanSetting("-nowarn", "Silence all warnings.")
+  val tasty = BooleanSetting("-tasty", "Compile classes from tasty in classpath. The arguments are used as class names.")
 
   /** -X "Advanced" settings
    */

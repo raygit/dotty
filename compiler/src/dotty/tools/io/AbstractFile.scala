@@ -10,6 +10,7 @@ import java.io.{
   ByteArrayOutputStream
 }
 import java.net.URL
+import java.nio.file.{FileAlreadyExistsException, Files, Paths}
 
 /**
  * An abstraction over files for use in the reflection/compiler libraries.
@@ -20,28 +21,26 @@ import java.net.URL
  * @version 1.0, 23/03/2004
  */
 object AbstractFile {
-  /** Returns "getFile(new File(path))". */
   def getFile(path: String): AbstractFile = getFile(File(path))
-  def getFile(path: Path): AbstractFile = getFile(path.toFile)
+  def getDirectory(path: String): AbstractFile = getDirectory(Directory(path))
+  def getFile(path: JPath): AbstractFile = getFile(File(path))
+  def getDirectory(path: JPath): AbstractFile = getDirectory(Directory(path))
 
   /**
    * If the specified File exists and is a regular file, returns an
    * abstract regular file backed by it. Otherwise, returns `null`.
    */
-  def getFile(file: File): AbstractFile =
-    if (file.isFile) new PlainFile(file) else null
-
-  /** Returns "getDirectory(new File(path))". */
-  def getDirectory(path: Path): AbstractFile = getDirectory(path.toFile)
+  def getFile(path: Path): AbstractFile =
+    if (path.isFile) new PlainFile(path) else null
 
   /**
    * If the specified File exists and is either a directory or a
    * readable zip or jar archive, returns an abstract directory
    * backed by it. Otherwise, returns `null`.
    */
-  def getDirectory(file: File): AbstractFile =
-    if (file.isDirectory) new PlainFile(file)
-    else if (file.isFile && Path.isExtensionJarOrZip(file.jfile)) ZipArchive fromFile file
+  def getDirectory(path: Path): AbstractFile =
+    if (path.isDirectory) new PlainFile(path)
+    else if (path.isFile && Path.isExtensionJarOrZip(path.jpath)) ZipArchive fromFile path.toFile
     else null
 
   /**
@@ -50,11 +49,8 @@ object AbstractFile {
    * Otherwise, returns `null`.
    */
   def getURL(url: URL): AbstractFile =
-    if (url.getProtocol == "file") {
-      val f = new java.io.File(url.getPath)
-      if (f.isDirectory) getDirectory(f)
-      else getFile(f)
-    } else null
+    if (url.getProtocol != "file") null
+    else new PlainFile(new Path(Paths.get(url.toURI)))
 
   def getResources(url: URL): AbstractFile = ZipArchive fromManifestURL url
 }
@@ -94,7 +90,7 @@ abstract class AbstractFile extends Iterable[AbstractFile] {
   def path: String
 
   /** Returns the path of this abstract file in a canonical form. */
-  def canonicalPath: String = if (file == null) path else file.getCanonicalPath
+  def canonicalPath: String = if (jpath == null) path else jpath.normalize.toString
 
   /** Checks extension case insensitively. */
   def hasExtension(other: String) = extension == other.toLowerCase
@@ -107,18 +103,26 @@ abstract class AbstractFile extends Iterable[AbstractFile] {
   def container : AbstractFile
 
   /** Returns the underlying File if any and null otherwise. */
-  def file: JFile
+  def file: JFile = try {
+    if (jpath == null) null
+    else jpath.toFile
+  } catch {
+    case _: UnsupportedOperationException => null
+  }
+
+  /** Returns the underlying Path if any and null otherwise. */
+  def jpath: JPath
 
   /** An underlying source, if known.  Mostly, a zip/jar file. */
   def underlyingSource: Option[AbstractFile] = None
 
   /** Does this abstract file denote an existing file? */
   def exists: Boolean = {
-    (file eq null) || file.exists
+    (jpath eq null) || Files.exists(jpath)
   }
 
   /** Does this abstract file represent something which can contain classfiles? */
-  def isClassContainer = isDirectory || (file != null && (extension == "jar" || extension == "zip"))
+  def isClassContainer = isDirectory || (jpath != null && (extension == "jar" || extension == "zip"))
 
   /** Create a file on disk, if one does not exist already. */
   def create(): Unit
@@ -147,7 +151,7 @@ abstract class AbstractFile extends Iterable[AbstractFile] {
   /** size of this file if it is a concrete file. */
   def sizeOption: Option[Int] = None
 
-  def toURL: URL = if (file == null) null else file.toURI.toURL
+  def toURL: URL = if (jpath == null) null else jpath.toUri.toURL
 
   /** Returns contents of file (if applicable) in a Char array.
    *  warning: use `Global.getSourceFile()` to use the proper
@@ -232,9 +236,11 @@ abstract class AbstractFile extends Iterable[AbstractFile] {
     val lookup = lookupName(name, isDir)
     if (lookup != null) lookup
     else {
-      val jfile = new JFile(file, name)
-      if (isDir) jfile.mkdirs() else jfile.createNewFile()
-      new PlainFile(jfile)
+      Files.createDirectories(jpath)
+      val path = jpath.resolve(name)
+      if (isDir) Files.createDirectory(path)
+      else Files.createFile(path)
+      new PlainFile(new File(path))
     }
   }
 

@@ -35,14 +35,14 @@ import scala.annotation.tailrec
 // static Attributes.Name   SPECIFICATION_VERSION
 
 class Jar(file: File) extends Iterable[JarEntry] {
-  def this(jfile: JFile) = this(File(jfile))
+  def this(jfile: JFile) = this(File(jfile.toPath))
   def this(path: String) = this(File(path))
 
   protected def errorFn(msg: String): Unit = Console println msg
 
   private implicit def enrichManifest(m: JManifest): Jar.WManifest = Jar.WManifest(m)
 
-  lazy val jarFile  = new JarFile(file.jfile)
+  lazy val jarFile  = new JarFile(file.jpath.toFile)
   lazy val manifest = withJarInput(s => Option(s.getManifest))
 
   def mainClass     = manifest map (f => f(Name.MAIN_CLASS))

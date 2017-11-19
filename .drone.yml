@@ -1,37 +1,51 @@
+# We override the default clone step to workaround a bug with GitHub (see #3415)
+clone:
+  clone:
+    image: plugins/git
+    commands:
+      - sleep 5s
+      - git init
+      - git remote add origin $DRONE_REMOTE_URL
+      - git fetch --no-tags origin $DRONE_COMMIT_REF
+      - if [ $DRONE_BUILD_EVENT = "push" ]; then git reset --hard -q $DRONE_COMMIT_SHA; else git checkout -qf FETCH_HEAD; fi
+      - git submodule update --init --recursive
+
 pipeline:
   # TESTS:
   # We run tests in parallel. Tests run in a copy of the working directory to avoid conflict
   test_legacy:
     group: test
-    image: lampepfl/dotty:2017-10-20
+    image: lampepfl/dotty:2017-11-17
     commands:
       - cp -R . /tmp/0/ && cd /tmp/0/
       - ./project/scripts/sbt legacyTests
 
   test:
     group: test
-    image: lampepfl/dotty:2017-10-20
+    image: lampepfl/dotty:2017-11-17
     commands:
       - cp -R . /tmp/1/ && cd /tmp/1/
-      - ./project/scripts/sbt ";compile ;testAll ;dotty-bench/jmh:run 1 1 tests/pos/alias.scala"
+      - ./project/scripts/sbt ";compile ;testAll"
+      - ./project/scripts/sbtTests
 
   test_bootstrapped:
     group: test
-    image: lampepfl/dotty:2017-10-20
+    image: lampepfl/dotty:2017-11-17
     commands:
       - cp -R . /tmp/2/ && cd /tmp/2/
-      - ./project/scripts/sbt ";dotty-bootstrapped/compile ;dotty-bootstrapped/testAll ;dotty-bench-bootstrapped/jmh:run 1 1 tests/pos/alias.scala"
+      - ./project/scripts/sbt ";dotty-bootstrapped/compile ;dotty-bootstrapped/testAll"
+      - ./project/scripts/sbtBootstrappedTests
 
   test_optimised:
     group: test
-    image: lampepfl/dotty:2017-10-20
+    image: lampepfl/dotty:2017-11-17
     commands:
       - cp -R . /tmp/3/ && cd /tmp/3/
       - ./project/scripts/sbt dotty-optimised/testAll
 
   test_sbt:
     group: test
-    image: lampepfl/dotty:2017-10-20
+    image: lampepfl/dotty:2017-11-17
     commands:
       - cp -R . /tmp/4/ && cd /tmp/4/
       - ./project/scripts/sbt sbt-dotty/scripted
@@ -41,7 +55,7 @@ pipeline:
 
   # DOCUMENTATION:
   documentation:
-    image: lampepfl/dotty:2017-10-20
+    image: lampepfl/dotty:2017-11-17
     commands:
       - ./project/scripts/genDocs
     secrets: [ bot_pass ]
@@ -53,7 +67,7 @@ pipeline:
   # PUBLISHING:
   # Publishing expect NIGHTLYBUILD or RELEASEBUILD to be set. See dottyVersion in Build.scala
   publish_nightly:
-    image: lampepfl/dotty:2017-10-20
+    image: lampepfl/dotty:2017-11-17
     environment:
       - NIGHTLYBUILD=yes
     commands:
@@ -66,7 +80,7 @@ pipeline:
       environment: nightly
 
   publish_release:
-    image: lampepfl/dotty:2017-10-20
+    image: lampepfl/dotty:2017-11-17
     environment:
       - RELEASEBUILD=yes
     commands:
@@ -92,7 +106,7 @@ pipeline:
       event: tag
 
   publish_sbt_release:
-    image: lampepfl/dotty:2017-10-20
+    image: lampepfl/dotty:2017-11-17
     environment:
       - RELEASEBUILD=yes
     commands:

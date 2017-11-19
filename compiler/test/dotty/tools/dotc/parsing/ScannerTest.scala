@@ -15,7 +15,7 @@ class ScannerTest extends DottyTest {
       "/scaladoc/scala/tools/nsc/doc/html/page/Template.scala"
     )
 
-  def scan(name: String): Unit = scan(new PlainFile(name))
+  def scan(name: String): Unit = scan(new PlainFile(File(name)))
 
   def scan(file: PlainFile): Unit = {
     //println("***** scanning " + file)
@@ -33,13 +33,13 @@ class ScannerTest extends DottyTest {
   def scanDir(path: String): Unit = scanDir(Directory(path))
 
   def scanDir(dir: Directory): Unit = {
-    if (blackList exists (dir.jfile.toString endsWith _))
-      println(s"blacklisted package: ${dir.jfile.getAbsolutePath}")
+    if (blackList exists (dir.jpath.toString endsWith _))
+      println(s"blacklisted package: ${dir.toAbsolute.jpath}")
     else
       for (f <- dir.files)
         if (f.name.endsWith(".scala"))
-          if (blackList exists (f.jfile.toString endsWith _))
-            println(s"blacklisted file: ${f.jfile.getAbsolutePath}")
+          if (blackList exists (f.jpath.toString endsWith _))
+            println(s"blacklisted file: ${f.toAbsolute.jpath}")
           else
             scan(new PlainFile(f))
     for (d <- dir.dirs)

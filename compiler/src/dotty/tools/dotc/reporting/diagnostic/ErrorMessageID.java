@@ -109,7 +109,10 @@ public enum ErrorMessageID {
     OnlyFunctionsCanBeFollowedByUnderscoreID,
     MissingEmptyArgumentListID,
     DuplicateNamedTypeParameterID,
-    UndefinedNamedTypeParameterID
+    UndefinedNamedTypeParameterID,
+    IllegalStartOfStatementID,
+    TraitIsExpectedID,
+    TraitRedefinedFinalMethodFromAnyRefID,
     ;
 
     public int errorNumber() {

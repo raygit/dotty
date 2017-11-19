@@ -1132,4 +1132,61 @@ class ErrorMessagesTests extends ErrorMessagesTest {
         assertEquals(tpParams, l2.map(_.show))
 
       }
+
+  @Test def illegalStartOfStatement =
+    checkMessagesAfter("frontend") {
+      """
+        |object Test {
+        |  { ) }
+        |  { private ) }
+        |}
+      """.stripMargin
+    }
+      .expect { (ictx, messages) =>
+        implicit val ctx: Context = ictx
+
+        assertMessageCount(2, messages)
+        val errWithModifier :: err :: Nil = messages
+
+        assertEquals(IllegalStartOfStatement(isModifier = false), err)
+        assertEquals(IllegalStartOfStatement(isModifier = true), errWithModifier)
+      }
+
+  @Test def traitIsExpected =
+    checkMessagesAfter("frontend") {
+      """
+        |class A
+        |class B
+        |
+        |object Test {
+        |  def main(args: Array[String]): Unit = {
+        |    val a = new A with B
+        |  }
+        |}
+      """.stripMargin
+    }
+    .expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+
+      assertMessageCount(1, messages)
+      val TraitIsExpected(symbol) :: Nil = messages
+      assertEquals("class B", symbol.show)
+    }
+
+  @Test def traitRedefinedFinalMethodFromAnyRef =
+    checkMessagesAfter("refchecks") {
+      """
+        |trait C {
+        |  def wait (): Unit
+        |}
+      """.stripMargin
+    }
+    .expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+
+      assertMessageCount(1, messages)
+      val TraitRedefinedFinalMethodFromAnyRef(method) = messages.head
+      assertEquals("method wait", method.show)
+    }
+
 }
