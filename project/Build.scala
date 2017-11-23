@@ -87,6 +87,7 @@ object Build {
   lazy val dotr =
     inputKey[Unit]("run compiled binary using the correct classpath, or the user supplied classpath")
 
+
   // Compiles the documentation and static site
   lazy val genDocs = taskKey[Unit]("run dottydoc to generate static documentation site")
 
@@ -435,7 +436,7 @@ object Build {
       }.taskValue,
 
       // Used by the backend
-      libraryDependencies += "org.scala-lang.modules" % "scala-asm" % "5.2.0-scala-2",
+      libraryDependencies += "org.scala-lang.modules" % "scala-asm" % "6.0.0-scala-1",
 
       // set system in/out for repl
       connectInput in run := true,
@@ -501,52 +502,30 @@ object Build {
 
       // Override run to be able to run compiled classfiles
       dotr := {
-        val args: Seq[String] = spaceDelimited("<arg>").parsed
+        val args: List[String] = spaceDelimited("<arg>").parsed.toList
         val java: String = Process("which" :: "java" :: Nil).!!
         val attList = (dependencyClasspath in Runtime).value
-        val _  = packageAll.value
+        val _ = packageAll.value
         val scalaLib = attList
           .map(_.data.getAbsolutePath)
           .find(_.contains("scala-library"))
           .toList.mkString(":")
 
-        if (java == "")
+        if (args.isEmpty) {
+          println("Couldn't run `dotr` without args. Use `repl` to run the repl or add args to run the dotty application")
+        } else if (java == "") {
           println("Couldn't find java executable on path, please install java to a default location")
-        else if (scalaLib == "") {
+        } else if (scalaLib == "") {
           println("Couldn't find scala-library on classpath, please run using script in bin dir instead")
         } else {
           val dottyLib = packageAll.value("dotty-library")
-          s"""$java -classpath .:$dottyLib:$scalaLib ${args.mkString(" ")}""".!
+          val fullArgs = insertClasspathInArgs(args, s".:$dottyLib:$scalaLib")
+          s"$java ${fullArgs.mkString(" ")}".!
         }
       },
-      run := Def.inputTaskDyn {
-        val dottyLib = packageAll.value("dotty-library")
-        val args: Seq[String] = spaceDelimited("<arg>").parsed
-
-        val fullArgs = args.span(_ != "-classpath") match {
-          case (beforeCp, "-classpath" :: cp :: rest) => beforeCp ++ List("-classpath", cp + ":" + dottyLib) ++ rest
-          case (beforeCp, _) => beforeCp ++ List("-classpath", dottyLib)
-        }
-
-        (runMain in Compile).toTask(
-          s" dotty.tools.dotc.Main " + fullArgs.mkString(" ")
-        )
-      }.evaluated,
-      dotc := run.evaluated,
-
-      repl := Def.inputTaskDyn {
-        val dottyLib = packageAll.value("dotty-library")
-        val args: Seq[String] = spaceDelimited("<arg>").parsed
-
-        val fullArgs = args.span(_ != "-classpath") match {
-          case (beforeCp, "-classpath" :: cp :: rest) => beforeCp ++ List("-classpath", cp + ":" + dottyLib) ++ rest
-          case (beforeCp, _) => beforeCp ++ List("-classpath", dottyLib)
-        }
-
-        (runMain in Compile).toTask(
-          s" dotty.tools.repl.Main " + fullArgs.mkString(" ")
-        )
-      }.evaluated,
+      run := dotc.evaluated,
+      dotc := runCompilerMain().evaluated,
+      repl := runCompilerMain(repl = true).evaluated,
 
       // enable verbose exception messages for JUnit
       testOptions in Test += Tests.Argument(
@@ -640,6 +619,32 @@ object Build {
       }
   )
 
+  def runCompilerMain(repl: Boolean = false) = Def.inputTaskDyn {
+    val dottyLib = packageAll.value("dotty-library")
+    val args0: List[String] = spaceDelimited("<arg>").parsed.toList
+    val decompile = args0.contains("-decompile")
+    val args = args0.filter(arg => arg != "-repl" || arg != "-decompile")
+
+    val main =
+      if (repl) "dotty.tools.repl.Main"
+      else if (decompile) "dotty.tools.dotc.decompiler.Main"
+      else "dotty.tools.dotc.Main"
+
+    val extraClasspath =
+      if (decompile && !args.contains("-classpath")) dottyLib + ":."
+      else dottyLib
+
+    val fullArgs = main :: insertClasspathInArgs(args, extraClasspath)
+
+    (runMain in Compile).toTask(fullArgs.mkString(" ", " ", ""))
+  }
+
+  def insertClasspathInArgs(args: List[String], cp: String): List[String] = {
+    val (beforeCp, fromCp) = args.span(_ != "-classpath")
+    val classpath = fromCp.drop(1).headOption.fold(cp)(_ + ":" + cp)
+    "-classpath" :: classpath :: beforeCp ::: fromCp.drop(2)
+  }
+
   lazy val nonBootstrapedDottyCompilerSettings = commonDottyCompilerSettings ++ Seq(
     // Disable scaladoc generation, it's way too slow and we'll replace it
     // by dottydoc anyway. We still publish an empty -javadoc.jar to make
@@ -702,20 +707,12 @@ object Build {
 
   lazy val dottySbtBridgeSettings = Seq(
     cleanSbtBridge := {
-      val dottySbtBridgeVersion = version.value
-      val dottyVersion = (version in `dotty-compiler`).value
-      val classVersion = System.getProperty("java.class.version")
-
-      val sbtV = sbtVersion.value
-      val sbtOrg = "org.scala-sbt"
-      val sbtScalaVersion = "2.10.6"
-
       val home = System.getProperty("user.home")
-      val org = organization.value
-      val artifact = moduleName.value
+      val sbtOrg = "org.scala-sbt"
+      val bridgeDirectoryPattern = s"*${dottyVersion}*"
 
-      IO.delete(file(home) / ".ivy2" / "cache" / sbtOrg / s"$org-$artifact-$dottySbtBridgeVersion-bin_${dottyVersion}__$classVersion")
-      IO.delete(file(home) / ".sbt"  / "boot" / s"scala-$sbtScalaVersion" / sbtOrg / "sbt" / sbtV / s"$org-$artifact-$dottySbtBridgeVersion-bin_${dottyVersion}__$classVersion")
+      IO.delete((file(home) / ".ivy2" / "cache" / sbtOrg * bridgeDirectoryPattern).get)
+      IO.delete((file(home) / ".sbt"  / "boot" * "scala-*" / sbtOrg / "sbt" * "*" * bridgeDirectoryPattern).get)
     },
     packageSrc in Compile := (packageSrc in Compile).dependsOn(cleanSbtBridge).value,
     description := "sbt compiler bridge for Dotty",

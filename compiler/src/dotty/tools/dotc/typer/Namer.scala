@@ -274,7 +274,7 @@ class Namer { typer: Typer =>
       def preExisting = ctx.effectiveScope.lookup(name)
       if (ctx.owner is PackageClass)
         if (preExisting.isDefinedInCurrentRun)
-          errorName(s"${preExisting.showLocated} has already been compiled\nonce during this run")
+          errorName(s"${preExisting.showLocated} has already been compiled once during this run")
         else name
       else
         if ((!ctx.owner.isClass || name.isTypeName) && preExisting.exists)
@@ -869,7 +869,7 @@ class Namer { typer: Typer =>
                 "\n(Note that inheriting a class of the same name is no longer allowed)"
               case _ => ""
             }
-            ctx.error(i"cyclic inheritance: $cls extends itself$addendum", parent.pos)
+            ctx.error(CyclicInheritance(cls, addendum), parent.pos)
             defn.ObjectType
           }
           else {
@@ -877,7 +877,7 @@ class Namer { typer: Typer =>
             if (pclazz.is(Final))
               ctx.error(ExtendFinalClass(cls, pclazz), cls.pos)
             if (pclazz.is(Sealed) && pclazz.associatedFile != cls.associatedFile)
-              ctx.error(em"cannot extend sealed $pclazz in different compilation unit", cls.pos)
+              ctx.error(UnableToExtendSealedClass(pclazz), cls.pos)
             pt
           }
         }
@@ -936,10 +936,10 @@ class Namer { typer: Typer =>
   }
 
   def typedAheadType(tree: Tree, pt: Type = WildcardType)(implicit ctx: Context): tpd.Tree =
-    typedAheadImpl(tree, typer.typed(_, pt)(ctx retractMode Mode.PatternOrType addMode Mode.Type))
+    typedAheadImpl(tree, typer.typed(_, pt)(ctx retractMode Mode.PatternOrTypeBits addMode Mode.Type))
 
   def typedAheadExpr(tree: Tree, pt: Type = WildcardType)(implicit ctx: Context): tpd.Tree =
-    typedAheadImpl(tree, typer.typed(_, pt)(ctx retractMode Mode.PatternOrType))
+    typedAheadImpl(tree, typer.typed(_, pt)(ctx retractMode Mode.PatternOrTypeBits))
 
   def typedAheadAnnotation(tree: Tree)(implicit ctx: Context): Symbol = tree match {
     case Apply(fn, _) => typedAheadAnnotation(fn)

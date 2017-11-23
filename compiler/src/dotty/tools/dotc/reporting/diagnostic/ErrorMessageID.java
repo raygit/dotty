@@ -110,7 +110,14 @@ public enum ErrorMessageID {
     MissingEmptyArgumentListID,
     DuplicateNamedTypeParameterID,
     UndefinedNamedTypeParameterID,
-    IllegalStartOfStatementID
+    IllegalStartOfStatementID,
+    TraitIsExpectedID,
+    TraitRedefinedFinalMethodFromAnyRefID,
+    PackageNameAlreadyDefinedID,
+    UnapplyInvalidNumberOfArgumentsID,
+    StaticFieldsOnlyAllowedInObjectsID,
+    CyclicInheritanceID,
+    UnableToExtendSealedClassID,
     ;
 
     public int errorNumber() {

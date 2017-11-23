@@ -405,35 +405,22 @@ class SpaceEngine(implicit ctx: Context) extends SpaceLogic {
         Prod(pat.tpe.stripAnnots, fun.tpe.widen, fun.symbol, pats.map(project), irrefutable(fun))
     case Typed(pat @ UnApply(_, _, _), _) => project(pat)
     case Typed(expr, tpt) =>
-      val unchecked = expr.tpe.hasAnnotation(ctx.definitions.UncheckedAnnot)
-      def warn(msg: String): Unit = if (!unchecked) ctx.warning(UncheckedTypePattern(msg), tpt.pos)
-      Typ(erase(expr.tpe.stripAnnots)(warn), true)
+      Typ(erase(expr.tpe.stripAnnots), true)
     case _ =>
       debug.println(s"unknown pattern: $pat")
       Empty
   }
 
   /* Erase a type binding according to erasure semantics in pattern matching */
-  def erase(tp: Type)(implicit warn: String => Unit): Type = tp match {
+  def erase(tp: Type): Type = tp match {
     case tp @ AppliedType(tycon, args) =>
       if (tycon.isRef(defn.ArrayClass)) tp.derivedAppliedType(tycon, args.map(erase))
-      else {
-        val ignoreWarning = args.forall { p =>
-          p.typeSymbol.is(BindDefinedType) ||
-            p.hasAnnotation(defn.UncheckedAnnot) ||
-            p.isInstanceOf[TypeBounds]
-        }
-        if (!ignoreWarning)
-          warn("type arguments are not checked since they are eliminated by erasure")
-
-        tp.derivedAppliedType(tycon, args.map(t => WildcardType))
-      }
+      else tp.derivedAppliedType(tycon, args.map(t => WildcardType))
     case OrType(tp1, tp2) =>
       OrType(erase(tp1), erase(tp2))
     case AndType(tp1, tp2) =>
       AndType(erase(tp1), erase(tp2))
     case tp: RefinedType =>
-      warn("type refinement is not checked since it is eliminated by erasure")
       tp.derivedRefinedType(erase(tp.parent), tp.refinedName, WildcardType)
     case _ => tp
   }
@@ -597,42 +584,57 @@ class SpaceEngine(implicit ctx: Context) extends SpaceLogic {
     // precondition: `tp1` should have the shape `path.Child`, thus `ThisType` is always covariant
     val thisTypeMap = new TypeMap {
       def apply(t: Type): Type = t match {
-        case tp @ ThisType(tref) if !tref.symbol.isStaticOwner && !tref.symbol.is(Module)  =>
-          // TODO: stackoverflow here
-          // newTypeVar(TypeBounds.upper(mapOver(tp.underlying)))
-          newTypeVar(TypeBounds.upper(mapOver(tref & tref.classSymbol.asClass.givenSelfType)))
+        case tp @ ThisType(tref) if !tref.symbol.isStaticOwner  =>
+          if (tref.symbol.is(Module)) mapOver(tref)
+          else newTypeVar(TypeBounds.upper(tp.underlying))
         case _ =>
           mapOver(t)
       }
     }
+
+    // replace type parameter references with bounds
+    val typeParamMap = new TypeMap {
+      def apply(t: Type): Type = t match {
+        case tp: TypeRef if tp.symbol.is(TypeParam) && tp.underlying.isInstanceOf[TypeBounds] =>
+          // See tests/patmat/gadt.scala  tests/patmat/exhausting.scala  tests/patmat/t9657.scala
+          val exposed =
+            if (variance == 0) newTypeVar(tp.underlying.bounds)
+            else if (variance == 1) mapOver(tp.underlying.hiBound)
+            else mapOver(tp.underlying.loBound)
+
+          debug.println(s"$tp exposed to =====> $exposed")
+          exposed
+        case _ =>
+          mapOver(t)
+      }
+    }
+
+    // replace uninstantiated type vars with WildcardType, check tests/patmat/3333.scala
+    val instUndetMap = new TypeMap {
+      def apply(t: Type): Type = t match {
+        case tvar: TypeVar if !tvar.isInstantiated => WildcardType(tvar.origin.underlying.bounds)
+        case _ => mapOver(t)
+      }
+    }
+
+    val force = new ForceDegree.Value(
+      tvar => !(ctx.typerState.constraint.entry(tvar.origin) eq tvar.origin.underlying),
+      minimizeAll = false
+    )
 
     val tvars = tp1.typeParams.map { tparam => newTypeVar(tparam.paramInfo.bounds) }
     val protoTp1 = thisTypeMap(tp1.appliedTo(tvars))
 
-    // replace type parameter references with fresh type vars or bounds
-    val typeParamMap = new TypeMap {
-      def apply(t: Type): Type = t match {
-
-        case tp: TypeRef if tp.symbol.is(TypeParam) && tp.underlying.isInstanceOf[TypeBounds] =>
-          // See tests/patmat/gadt.scala  tests/patmat/exhausting.scala
-          val bound =
-            if (variance == 0) tp.underlying.bounds      // non-variant case is not well-founded
-            else if (variance == 1) TypeBounds.upper(tp)
-            else TypeBounds.lower(tp)
-          newTypeVar(bound)
-        case tp: RefinedType if tp.refinedInfo.isInstanceOf[TypeBounds] =>
-          // Ideally, we would expect type inference to do the job
-          // Check tests/patmat/t9657.scala
-          expose(tp)
-        case _ =>
-          mapOver(t)
-      }
+    if (protoTp1 <:< tp2) {
+      if (isFullyDefined(protoTp1, force)) protoTp1
+      else instUndetMap(protoTp1)
     }
-
-    if (protoTp1 <:< tp2 && isFullyDefined(protoTp1, ForceDegree.noBottom)) protoTp1
     else {
       val protoTp2 = typeParamMap(tp2)
-      if (protoTp1 <:< protoTp2 && isFullyDefined(protoTp1 & protoTp2, ForceDegree.noBottom)) protoTp1
+      if (protoTp1 <:< protoTp2) {
+        if (isFullyDefined(AndType(protoTp1, protoTp2), force)) protoTp1
+        else instUndetMap(protoTp1)
+      }
       else {
         debug.println(s"$protoTp1 <:< $protoTp2 = false")
         NoType
@@ -772,51 +774,6 @@ class SpaceEngine(implicit ctx: Context) extends SpaceLogic {
     debug.println(s"checkable: ${sel.show} = $res")
     res
   }
-
-
-  /** Eliminate reference to type parameters in refinements
-   *
-   *  A <: X :> Y  B <: U :> V   M { type T <: A :> B }  ~~>  M { type T <: X :> V }
-   */
-  def expose(tp: Type, refineCtx: Boolean = false, up: Boolean = true): Type = tp match {
-    case tp: AppliedType =>
-      tp.derivedAppliedType(expose(tp.tycon, refineCtx, up), tp.args.map(expose(_, refineCtx, up)))
-
-    case tp: TypeAlias =>
-      val hi = expose(tp.alias, refineCtx, up)
-      val lo = expose(tp.alias, refineCtx, up)
-
-      if (hi =:= lo)
-        tp.derivedTypeAlias(hi)
-      else
-        tp.derivedTypeBounds(lo, hi)
-
-    case tp @ TypeBounds(lo, hi) =>
-      tp.derivedTypeBounds(expose(lo, refineCtx, false), expose(hi, refineCtx, true))
-
-    case tp: RefinedType =>
-      tp.derivedRefinedType(
-        expose(tp.parent),
-        tp.refinedName,
-        expose(tp.refinedInfo, true, up)
-      )
-    case tp: TypeProxy if refineCtx =>
-      tp.underlying match {
-        case TypeBounds(lo, hi) =>
-          expose(if (up) hi else lo, refineCtx, up)
-        case _ =>
-          tp
-      }
-
-    case OrType(tp1, tp2) =>
-      OrType(expose(tp1, refineCtx, up), expose(tp2, refineCtx, up))
-
-    case AndType(tp1, tp2) =>
-      AndType(expose(tp1, refineCtx, up), expose(tp2, refineCtx, up))
-
-    case _ => tp
-  }
-
 
   def checkExhaustivity(_match: Match): Unit = {
     val Match(sel, cases) = _match

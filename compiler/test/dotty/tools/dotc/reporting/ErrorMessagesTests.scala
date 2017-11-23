@@ -1151,4 +1151,102 @@ class ErrorMessagesTests extends ErrorMessagesTest {
         assertEquals(IllegalStartOfStatement(isModifier = false), err)
         assertEquals(IllegalStartOfStatement(isModifier = true), errWithModifier)
       }
+
+  @Test def traitIsExpected =
+    checkMessagesAfter("frontend") {
+      """
+        |class A
+        |class B
+        |
+        |object Test {
+        |  def main(args: Array[String]): Unit = {
+        |    val a = new A with B
+        |  }
+        |}
+      """.stripMargin
+    }
+    .expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+
+      assertMessageCount(1, messages)
+      val TraitIsExpected(symbol) :: Nil = messages
+      assertEquals("class B", symbol.show)
+    }
+
+  @Test def traitRedefinedFinalMethodFromAnyRef =
+    checkMessagesAfter("refchecks") {
+      """
+        |trait C {
+        |  def wait (): Unit
+        |}
+      """.stripMargin
+    }
+    .expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+
+      assertMessageCount(1, messages)
+      val TraitRedefinedFinalMethodFromAnyRef(method) = messages.head
+      assertEquals("method wait", method.show)
+    }
+
+  @Test def packageNameAlreadyDefined =
+    checkMessagesAfter("frontend") {
+      """
+        |package bar { }
+        |object bar { }
+        |
+      """.stripMargin
+    }.expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+
+      val PackageNameAlreadyDefined(pkg) = messages.head
+      assertEquals(pkg.show, "object bar")
+    }
+
+  @Test def unapplyInvalidNumberOfArguments =
+    checkMessagesAfter("frontend") {
+      """
+        |case class Boo(a: Int, b: String)
+        |
+        |object autoTuplingNeg2 {
+        |  val z = Boo(1, "foo")
+        |
+        |  z match {
+        |    case Boo(a, b, c) => a
+        |  }
+        |}
+      """.stripMargin
+    }
+      .expect { (ictx, messages) =>
+        implicit val ctx: Context = ictx
+        assertMessageCount(1, messages)
+        val UnapplyInvalidNumberOfArguments(qual, argTypes) :: Nil = messages
+        assertEquals("Boo", qual.show)
+        assertEquals("(class Int, class String)", argTypes.map(_.typeSymbol).mkString("(", ", ", ")"))
+      }
+
+  @Test def staticOnlyAllowedInsideObjects =
+    checkMessagesAfter("checkStatic") {
+      """
+        |class Foo {
+        |  @annotation.static def bar(): Unit = bar()
+        |}
+      """.stripMargin
+    }.expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+      val StaticFieldsOnlyAllowedInObjects(field) = messages.head
+      assertEquals(field.show, "method bar")
+    }
+
+  @Test def cyclicInheritance =
+    checkMessagesAfter("frontend") {
+      "class A extends A"
+    }
+    .expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+
+      assertMessageCount(1, messages)
+      val CyclicInheritance(symbol, _) :: Nil = messages
+      assertEquals("class A", symbol.show)
+    }
 }

@@ -1888,4 +1888,88 @@ object messages {
     }
     val explanation = "A statement is either an import, a definition or an expression."
   }
+
+  case class TraitIsExpected(symbol: Symbol)(implicit ctx: Context) extends Message(TraitIsExpectedID) {
+    val kind = "Syntax"
+    val msg = hl"$symbol is not a trait"
+    val explanation = {
+      val errorCodeExample =
+        """class A
+          |class B
+          |
+          |val a = new A with B // will fail with a compile error - class B is not a trait""".stripMargin
+      val codeExample =
+        """class A
+          |trait B
+          |
+          |val a = new A with B // compiles normally""".stripMargin
+
+      hl"""Only traits can be mixed into classes using a ${"with"} keyword.
+          |Consider the following example:
+          |
+          |$errorCodeExample
+          |
+          |The example mentioned above would fail because B is not a trait.
+          |But if you make B a trait it will be compiled without any errors:
+          |
+          |$codeExample
+          |"""
+    }
+  }
+
+  case class TraitRedefinedFinalMethodFromAnyRef(method: Symbol)(implicit ctx: Context) extends Message(TraitRedefinedFinalMethodFromAnyRefID) {
+    val kind = "Syntax"
+    val msg = hl"Traits cannot redefine final $method from ${"class AnyRef"}."
+    val explanation = ""
+  }
+
+  case class PackageNameAlreadyDefined(pkg: Symbol)(implicit ctx: Context) extends Message(PackageNameAlreadyDefinedID) {
+    val msg = hl"${pkg} is already defined, cannot be a ${"package"}"
+    val kind = "Naming"
+    val explanation =
+      hl"An ${"object"} cannot have the same name as an existing ${"package"}. Rename either one of them."
+  }
+
+  case class UnapplyInvalidNumberOfArguments(qual: untpd.Tree, argTypes: List[Type])(implicit ctx: Context)
+    extends Message(UnapplyInvalidNumberOfArgumentsID) {
+    val kind = "Syntax"
+    val msg = hl"Wrong number of argument patterns for $qual; expected: ($argTypes%, %)"
+    val explanation =
+      hl"""The Unapply method of $qual was used with incorrect number of arguments.
+          |Expected usage would be something like:
+          |case $qual(${argTypes.map(_ => '_')}%, %) => ...
+          |
+        |where subsequent arguments would have following types: ($argTypes%, %).
+        |""".stripMargin
+  }
+
+  case class StaticFieldsOnlyAllowedInObjects(member: Symbol)(implicit ctx: Context) extends Message(StaticFieldsOnlyAllowedInObjectsID) {
+    val msg = hl"${"@static"} $member in ${member.owner} must be defined inside an ${"object"}."
+    val kind = "Syntax"
+    val explanation =
+      hl"${"@static"} members are only allowed inside objects."
+  }
+
+  case class CyclicInheritance(symbol: Symbol, addendum: String)(implicit ctx: Context) extends Message(CyclicInheritanceID) {
+    val kind = "Syntax"
+    val msg = hl"Cyclic inheritance: $symbol extends itself$addendum"
+    val explanation = {
+      val codeExample = "class A extends A"
+
+      hl"""Cyclic inheritance is prohibited in Dotty.
+          |Consider the following example:
+          |
+          |$codeExample
+          |
+          |The example mentioned above would fail because this type of inheritance hierarchy
+          |creates a "cycle" where a not yet defined class A extends itself which makes
+          |impossible to instantiate an object of this class"""
+    }
+  }
+
+  case class UnableToExtendSealedClass(pclazz: Symbol)(implicit ctx: Context) extends Message(UnableToExtendSealedClassID) {
+    val kind = "Syntax"
+    val msg = hl"Cannot extend ${"sealed"} $pclazz in a different source file"
+    val explanation = "A sealed class or trait can only be extended in the same file as its declaration"
+  }
 }
