@@ -151,7 +151,8 @@ trait ParallelTesting extends RunnerOrchestration { self =>
   ) extends TestSource {
 
     /** Get the files grouped by `_X` as a list of groups, files missing this
-     *  suffix will be put into the same group
+     *  suffix will be put into the same group.
+     *  Files in each group are sorted alphabetically.
      *
      *  Filters out all none source files
      */
@@ -170,7 +171,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
         .toOption
         .getOrElse("")
       }
-      .toList.sortBy(_._1).map(_._2.filter(isSourceFile))
+      .toList.sortBy(_._1).map(_._2.filter(isSourceFile).sorted)
   }
 
   /** Each `Test` takes the `testSources` and performs the compilation and assertions
@@ -1113,13 +1114,16 @@ trait ParallelTesting extends RunnerOrchestration { self =>
    *  By default, files are compiled in alphabetical order. An optional seed
    *  can be used for randomization.
    */
-  def compileDir(f: String, flags: TestFlags, randomOrder: Option[Int] = None)(implicit testGroup: TestGroup): CompilationTest = {
+  def compileDir(f: String, flags: TestFlags, randomOrder: Option[Int] = None, recursive: Boolean = true)(implicit testGroup: TestGroup): CompilationTest = {
     val outDir = defaultOutputDir + testGroup + "/"
     val sourceDir = new JFile(f)
     checkRequirements(f, sourceDir, outDir)
 
     def flatten(f: JFile): Array[JFile] =
-      if (f.isDirectory) f.listFiles.flatMap(flatten)
+      if (f.isDirectory) {
+        val files = f.listFiles
+        if (recursive) files.flatMap(flatten) else files
+      }
       else Array(f)
 
     // Sort files either alphabetically or randomly using the provided seed:

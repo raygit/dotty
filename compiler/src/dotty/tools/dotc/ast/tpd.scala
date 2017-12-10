@@ -196,7 +196,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
       case tp: MethodType =>
         def valueParam(name: TermName, info: Type): TermSymbol = {
           val maybeImplicit = if (tp.isImplicitMethod) Implicit else EmptyFlags
-          ctx.newSymbol(sym, name, TermParam | maybeImplicit, info)
+          ctx.newSymbol(sym, name, TermParam | maybeImplicit, info, coord = sym.coord)
         }
         val params = (tp.paramNames, tp.paramInfos).zipped.map(valueParam)
         val (paramss, rtp) = valueParamss(tp.instantiate(params map (_.termRef)))
@@ -262,7 +262,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     val parents1 =
       if (parents.head.classSymbol.is(Trait)) parents.head.parents.head :: parents
       else parents
-    val cls = ctx.newNormalizedClassSymbol(owner, tpnme.ANON_FUN, Synthetic, parents1,
+    val cls = ctx.newNormalizedClassSymbol(owner, tpnme.ANON_CLASS, Synthetic, parents1,
         coord = fns.map(_.pos).reduceLeft(_ union _))
     val constr = ctx.newConstructor(cls, Synthetic, Nil, Nil).entered
     def forwarder(fn: TermSymbol, name: TermName) = {
@@ -382,7 +382,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     val targs = tp.argTypes
     val tycon = tp.typeConstructor
     New(tycon)
-      .select(TermRef.withSym(tycon, constr))
+      .select(TermRef(tycon, constr))
       .appliedToTypes(targs)
       .appliedToArgs(args)
   }
@@ -709,7 +709,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
       val tp =
         if (sym.isType) {
           assert(!sym.is(TypeParam))
-          TypeRef(tree.tpe, sym.name.asTypeName)
+          TypeRef(tree.tpe, sym.asType)
         }
         else
           TermRef(tree.tpe, sym.name.asTermName, sym.denot.asSeenFrom(tree.tpe))
@@ -718,8 +718,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
 
     /** A select node with the given selector name and signature and a computed type */
     def selectWithSig(name: Name, sig: Signature)(implicit ctx: Context): Tree =
-      untpd.SelectWithSig(tree, name, sig)
-        .withType(TermRef(tree.tpe, name.asTermName.withSig(sig)))
+      untpd.SelectWithSig(tree, name, sig).withType(tree.tpe.select(name.asTermName, sig))
 
     /** A select node with selector name and signature taken from `sym`.
      *  Note: Use this method instead of select(sym) if the referenced symbol
@@ -927,7 +926,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
       }
       else denot.asSingleDenotation.termRef
     val fun = receiver
-      .select(TermRef.withSym(receiver.tpe, selected.termSymbol.asTerm))
+      .select(TermRef(receiver.tpe, selected.termSymbol.asTerm))
       .appliedToTypes(targs)
 
     def adaptLastArg(lastParam: Tree, expectedType: Type) = {

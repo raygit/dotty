@@ -210,7 +210,7 @@ class Definitions {
    *  members at runtime.
    */
   lazy val ScalaShadowingPackageVal = ctx.requiredPackage(nme.scalaShadowing)
-  lazy val ScalaShadowingPackageClass = ScalaShadowingPackageVal.moduleClass.asClass
+  def ScalaShadowingPackageClass(implicit ctx: Context) = ScalaShadowingPackageVal.moduleClass.asClass
 
   /** Note: We cannot have same named methods defined in Object and Any (and AnyVal, for that matter)
    *  because after erasure the Any and AnyVal references get remapped to the Object methods
@@ -511,7 +511,6 @@ class Definitions {
   lazy val IndexOutOfBoundsException = ctx.requiredClass("java.lang.IndexOutOfBoundsException")
   lazy val ClassClass                = ctx.requiredClass("java.lang.Class")
   lazy val BoxedNumberClass          = ctx.requiredClass("java.lang.Number")
-  lazy val ThrowableClass            = ctx.requiredClass("java.lang.Throwable")
   lazy val ClassCastExceptionClass   = ctx.requiredClass("java.lang.ClassCastException")
   lazy val ArithmeticExceptionClass  = ctx.requiredClass("java.lang.ArithmeticException")
     lazy val ArithmeticExceptionClass_stringConstructor  = ArithmeticExceptionClass.info.member(nme.CONSTRUCTOR).suchThat(_.info.firstParamTypes match {
@@ -526,6 +525,8 @@ class Definitions {
 
   // in scalac modified to have Any as parent
 
+  lazy val ThrowableType: TypeRef          = ctx.requiredClassRef("java.lang.Throwable")
+  def ThrowableClass(implicit ctx: Context) = ThrowableType.symbol.asClass
   lazy val SerializableType: TypeRef       = ctx.requiredClassRef("scala.Serializable")
   def SerializableClass(implicit ctx: Context) = SerializableType.symbol.asClass
   lazy val StringBuilderType: TypeRef      = ctx.requiredClassRef("scala.collection.mutable.StringBuilder")
@@ -632,8 +633,6 @@ class Definitions {
   def MigrationAnnot(implicit ctx: Context) = MigrationAnnotType.symbol.asClass
   lazy val NativeAnnotType                   = ctx.requiredClassRef("scala.native")
   def NativeAnnot(implicit ctx: Context) = NativeAnnotType.symbol.asClass
-  lazy val RemoteAnnotType                   = ctx.requiredClassRef("scala.remote")
-  def RemoteAnnot(implicit ctx: Context) = RemoteAnnotType.symbol.asClass
   lazy val RepeatedAnnotType = ctx.requiredClassRef("scala.annotation.internal.Repeated")
   def RepeatedAnnot(implicit ctx: Context) = RepeatedAnnotType.symbol.asClass
   lazy val SourceFileAnnotType = ctx.requiredClassRef("scala.annotation.internal.SourceFile")
@@ -685,7 +684,6 @@ class Definitions {
   // Derived types
 
   def RepeatedParamType = RepeatedParamClass.typeRef
-  def ThrowableType = ThrowableClass.typeRef
 
   def ClassType(arg: Type)(implicit ctx: Context) = {
     val ctype = ClassClass.typeRef
@@ -833,6 +831,9 @@ class Definitions {
   def isAbstractFunctionClass(cls: Symbol) = isVarArityClass(cls, str.AbstractFunction)
   def isTupleClass(cls: Symbol) = isVarArityClass(cls, str.Tuple)
   def isProductClass(cls: Symbol) = isVarArityClass(cls, str.Product)
+
+  def isScalaShadowingPackageClass(cls: Symbol) =
+    cls.name == tpnme.scalaShadowing && cls.owner == RootClass
 
   /** Returns the erased class of the function class `cls`
    *    - FunctionN for N > 22 becomes FunctionXXL

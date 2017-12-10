@@ -13,6 +13,7 @@ import Trees._
 import TypeApplications._
 import Decorators._
 import config.Config
+import util.Positions._
 import transform.SymUtils._
 import scala.annotation.switch
 import language.implicitConversions
@@ -296,7 +297,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
       else treeText
 
     def idText(tree: untpd.Tree): Text = {
-      if (ctx.settings.uniqid.value && tree.hasType && tree.symbol.exists) s"#${tree.symbol.id}" else ""
+      if ((ctx.settings.uniqid.value || Printer.debugPrintUnique) && tree.hasType && tree.symbol.exists) s"#${tree.symbol.id}" else ""
     }
 
     def nameIdText(tree: untpd.NameTree): Text = {
@@ -367,7 +368,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
           case _ =>
             toText(name)
         }
-        if (name.isType) typeText(txt)
+        if (name.isTypeName) typeText(txt)
         else txt
       case tree @ Select(qual, name) =>
         if (qual.isType) toTextLocal(qual) ~ "#" ~ typeText(toText(name))
@@ -630,14 +631,18 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
       else if (tree.isType && !homogenizedView)
         txt = toText(tp)
     }
-    if (printPos && !suppressPositions) {
-      // add positions
-      val pos =
-        if (homogenizedView && !tree.isInstanceOf[MemberDef]) tree.pos.toSynthetic
-        else tree.pos
-      val clsStr = ""//if (tree.isType) tree.getClass.toString else ""
-      txt = (txt ~ "@" ~ pos.toString ~ clsStr).close
-    }
+    if (!suppressPositions) {
+      if (printPos) {
+        val pos =
+          if (homogenizedView && !tree.isInstanceOf[MemberDef]) tree.pos.toSynthetic
+          else tree.pos
+        val clsStr = ""//if (tree.isType) tree.getClass.toString else ""
+        txt = (txt ~ "@" ~ pos.toString ~ clsStr).close
+      }
+      if (ctx.settings.YprintPosSyms.value && tree.isDef)
+        txt = (txt ~
+          s"@@(${tree.symbol.name}=" ~ tree.symbol.pos.toString ~ ")").close
+   }
     if (ctx.settings.YshowTreeIds.value)
       txt = (txt ~ "#" ~ tree.uniqueId.toString).close
     tree match {

@@ -349,7 +349,16 @@ class Namer { typer: Typer =>
     }
     val existing = pkgOwner.info.decls.lookup(pid.name)
 
-    if ((existing is Package) && (pkgOwner eq existing.owner)) existing
+    if ((existing is Package) && (pkgOwner eq existing.owner)) {
+      existing.moduleClass.denot match {
+        case d: PackageClassDenotation =>
+          // Remove existing members coming from a previous compilation of this file,
+          // they are obsolete.
+          d.unlinkFromFile(ctx.source.file)
+        case _ =>
+      }
+      existing
+    }
     else {
       /** If there's already an existing type, then the package is a dup of this type */
       val existingType = pkgOwner.info.decls.lookup(pid.name.toTypeName)
@@ -754,8 +763,11 @@ class Namer { typer: Typer =>
           else levels(c.outer) + 1
         println(s"!!!completing ${denot.symbol.showLocated} in buried typerState, gap = ${levels(ctx)}")
       }
-      assert(ctx.runId == creationContext.runId, "completing $denot in wrong run ${ctx.runId}, was created in ${creationContext.runId}")
-      completeInCreationContext(denot)
+      if (ctx.runId > creationContext.runId) {
+        assert(ctx.mode.is(Mode.Interactive), s"completing $denot in wrong run ${ctx.runId}, was created in ${creationContext.runId}")
+        denot.info = UnspecifiedErrorType
+      }
+      else completeInCreationContext(denot)
     }
 
     private def addInlineInfo(denot: SymDenotation) = original match {
@@ -1195,12 +1207,12 @@ class Namer { typer: Typer =>
     }
 
     // Here we pay the price for the cavalier setting info to TypeBounds.empty above.
-    // We need to compensate by invalidating caches in references that might
+    // We need to compensate by reloading the denotation of references that might
     // still contain the TypeBounds.empty. If we do not do this, stdlib factories
     // fail with a bounds error in PostTyper.
     def ensureUpToDate(tp: Type, outdated: Type) = tp match {
       case tref: TypeRef if tref.info == outdated && sym.info != outdated =>
-        tref.uncheckedSetSym(null)
+        tref.recomputeDenot()
       case _ =>
     }
     ensureUpToDate(sym.typeRef, dummyInfo)
