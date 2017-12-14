@@ -67,7 +67,7 @@ class Definitions {
     enterTypeField(cls, name, flags | ClassTypeParamCreationFlags, scope)
 
   private def enterSyntheticTypeParam(cls: ClassSymbol, paramFlags: FlagSet, scope: MutableScope, suffix: String = "T0") =
-    enterTypeParam(cls, suffix.toTypeName.expandedName(cls), paramFlags, scope)
+    enterTypeParam(cls, suffix.toTypeName, paramFlags, scope)
 
   // NOTE: Ideally we would write `parentConstrs: => Type*` but SIP-24 is only
   // implemented in Dotty and not in Scala 2.
@@ -397,6 +397,7 @@ class Definitions {
 
   lazy val UnitType: TypeRef = valueTypeRef("scala.Unit", BoxedUnitType, java.lang.Void.TYPE, UnitEnc, nme.specializedTypeNames.Void)
   def UnitClass(implicit ctx: Context) = UnitType.symbol.asClass
+  def UnitModuleClass(implicit ctx: Context) = UnitType.symbol.asClass.linkedClass
   lazy val BooleanType = valueTypeRef("scala.Boolean", BoxedBooleanType, java.lang.Boolean.TYPE, BooleanEnc, nme.specializedTypeNames.Boolean)
   def BooleanClass(implicit ctx: Context) = BooleanType.symbol.asClass
     lazy val Boolean_notR   = BooleanClass.requiredMethodRef(nme.UNARY_!)
