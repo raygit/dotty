@@ -20,7 +20,7 @@ import printing.Formatting
 import ErrorMessageID._
 import Denotations.SingleDenotation
 import dotty.tools.dotc.ast.Trees
-import dotty.tools.dotc.ast.untpd.Modifiers
+import dotty.tools.dotc.config.ScalaVersion
 import dotty.tools.dotc.core.Flags.{FlagSet, Mutable}
 import dotty.tools.dotc.core.SymDenotations.SymDenotation
 import scala.util.control.NonFatal
@@ -140,7 +140,7 @@ object messages {
   }
 
   case class EmptyCatchBlock(tryBody: untpd.Tree)(implicit ctx: Context)
- extends EmptyCatchOrFinallyBlock(tryBody, EmptyCatchBlockID) {
+  extends EmptyCatchOrFinallyBlock(tryBody, EmptyCatchBlockID) {
     val kind = "Syntax"
     val msg =
       hl"""|The ${"catch"} block does not contain a valid expression, try
@@ -193,7 +193,8 @@ object messages {
         else
           ""
 
-      i"missing parameter type for parameter ${param.name}$ofFun, expected = $pt"
+      i"""missing parameter type for parameter ${param.name}$ofFun, expected = $pt
+         |The argument types of an anonymous function must be fully known. (SLS 8.5)"""
     }
 
     val explanation =
@@ -356,12 +357,7 @@ object messages {
         )
       }
 
-      val siteType = site match {
-        case tp: NamedType => tp.info
-        case tp => tp
-      }
-
-      ex"$selected `$name` is not a member of $siteType$closeMember"
+      ex"$selected `$name` is not a member of ${site.widen}$closeMember"
     }
 
     val explanation = ""
@@ -455,6 +451,22 @@ object messages {
            |implicit class ${cdef.name}...
            |
            |""" + implicitClassRestrictionsText
+  }
+
+  case class ImplicitClassPrimaryConstructorArity()(implicit ctx: Context)
+  extends Message(ImplicitClassPrimaryConstructorArityID){
+    val kind = "Syntax"
+    val msg = "Implicit classes must accept exactly one primary constructor parameter"
+    val explanation = {
+      val example = "implicit class RichDate(date: java.util.Date)"
+      hl"""Implicit classes may only take one non-implicit argument in their constructor. For example:
+          |
+          | $example
+          |
+          |While it’s possible to create an implicit class with more than one non-implicit argument,
+          |such classes aren’t used during implicit lookup.
+          |""" + implicitClassRestrictionsText
+    }
   }
 
   case class ObjectMayNotHaveSelfType(mdef: untpd.ModuleDef)(implicit ctx: Context)
@@ -733,7 +745,7 @@ object messages {
     val msg =
       hl"""|${NoColor(msgPrefix)} type arguments for $prettyName$expectedArgString
            |expected: $expectedArgString
-           |actual:   $actualArgString""".stripMargin
+           |actual:   ${NoColor(actualArgString)}""".stripMargin
 
     val explanation = {
       val tooManyTypeParams =
@@ -1422,11 +1434,11 @@ object messages {
     val msg = hl"$tpe does not take type parameters"
 
     private val ps =
-      if (params.size == 1) hl"a type parameter ${params.head}"
-      else hl"type parameters ${params.map(_.show).mkString(", ")}"
+      if (params.size == 1) s"a type parameter ${params.head}"
+      else s"type parameters ${params.map(_.show).mkString(", ")}"
 
     val explanation =
-      i"""You specified $ps for ${hl"$tpe"}, which is not
+      i"""You specified ${NoColor(ps)} for ${hl"$tpe"}, which is not
          |declared to take any.
          |"""
   }
@@ -1967,9 +1979,100 @@ object messages {
     }
   }
 
+  case class BadSymbolicReference(denot: SymDenotation)(implicit ctx: Context) extends Message(BadSymbolicReferenceID) {
+    val kind = "Reference"
+
+    val msg = {
+      val denotationOwner = denot.owner
+      val denotationName = ctx.fresh.setSetting(ctx.settings.YdebugNames, true).nameString(denot.name)
+      val file = denot.symbol.associatedFile
+      val (location, src) =
+        if (file != null) (s" in $file", file.toString)
+        else ("", "the signature")
+
+      hl"""Bad symbolic reference. A signature$location
+          |refers to $denotationName in ${denotationOwner.showKind} ${denotationOwner.showFullName} which is not available.
+          |It may be completely missing from the current classpath, or the version on
+          |the classpath might be incompatible with the version used when compiling $src."""
+    }
+
+    val explanation = ""
+  }
+
   case class UnableToExtendSealedClass(pclazz: Symbol)(implicit ctx: Context) extends Message(UnableToExtendSealedClassID) {
     val kind = "Syntax"
     val msg = hl"Cannot extend ${"sealed"} $pclazz in a different source file"
     val explanation = "A sealed class or trait can only be extended in the same file as its declaration"
+  }
+
+  case class SymbolHasUnparsableVersionNumber(symbol: Symbol, migrationMessage: String)(implicit ctx: Context)
+  extends Message(SymbolHasUnparsableVersionNumberID) {
+    val kind = "Syntax"
+    val msg = hl"${symbol.showLocated} has an unparsable version number: $migrationMessage"
+    val explanation =
+      hl"""$migrationMessage
+          |
+          |The ${symbol.showLocated} is marked with ${"@migration"} indicating it has changed semantics
+          |between versions and the ${"-Xmigration"} settings is used to warn about constructs
+          |whose behavior may have changed since version change."""
+  }
+
+  case class SymbolChangedSemanticsInVersion(
+    symbol: Symbol,
+    migrationVersion: ScalaVersion
+  )(implicit ctx: Context) extends Message(SymbolChangedSemanticsInVersionID) {
+    val kind = "Syntax"
+    val msg = hl"${symbol.showLocated} has changed semantics in version $migrationVersion"
+    val explanation = {
+      hl"""The ${symbol.showLocated} is marked with ${"@migration"} indicating it has changed semantics
+          |between versions and the ${"-Xmigration"} settings is used to warn about constructs
+          |whose behavior may have changed since version change."""
+    }
+  }
+
+  case class UnableToEmitSwitch()(implicit ctx: Context)
+  extends Message(UnableToEmitSwitchID) {
+    val kind = "Syntax"
+    val msg = hl"Could not emit switch for ${"@switch"} annotated match"
+    val explanation = {
+      val codeExample =
+        """val ConstantB = 'B'
+          |final val ConstantC = 'C'
+          |def tokenMe(ch: Char) = (ch: @switch) match {
+          |  case '\t' | '\n' => 1
+          |  case 'A'         => 2
+          |  case ConstantB   => 3  // a non-literal may prevent switch generation: this would not compile
+          |  case ConstantC   => 4  // a constant value is allowed
+          |  case _           => 5
+          |}""".stripMargin
+
+      hl"""If annotated with ${"@switch"}, the compiler will verify that the match has been compiled to a
+          |tableswitch or lookupswitch and issue an error if it instead compiles into a series of conditional
+          |expressions. Example usage:
+          |
+          |$codeExample
+          |
+          |The compiler will not apply the optimisation if:
+          |- the matched value is not of type ${"Int"}, ${"Byte"}, ${"Short"} or ${"Char"}
+          |- the matched value is not a constant literal
+          |- there are less than three cases"""
+    }
+  }
+
+  case class MissingCompanionForStatic(member: Symbol)(implicit ctx: Context) extends Message(MissingCompanionForStaticID) {
+    val msg = hl"${member.owner} does not have a companion class"
+    val kind = "Syntax"
+    val explanation =
+      hl"An object that contains ${"@static"} members must have a companion class."
+  }
+
+  case class PolymorphicMethodMissingTypeInParent(rsym: Symbol, parentSym: Symbol)(implicit ctx: Context)
+  extends Message(PolymorphicMethodMissingTypeInParentID) {
+    val kind = "Syntax"
+    val msg = hl"polymorphic refinement $rsym without matching type in parent $parentSym is no longer allowed"
+    val explanation =
+      hl"""Polymorphic $rsym is not allowed in the structural refinement of $parentSym because
+          |$rsym does not override any method in $parentSym. Structural refinement does not allow for
+          |polymorphic methods."""
   }
 }

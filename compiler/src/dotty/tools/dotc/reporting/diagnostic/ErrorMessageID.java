@@ -20,6 +20,7 @@ public enum ErrorMessageID {
     EarlyDefinitionsNotSupportedID,
     TopLevelImplicitClassID,
     ImplicitCaseClassID,
+    ImplicitClassPrimaryConstructorArityID,
     ObjectMayNotHaveSelfTypeID,
     TupleTooLongID,
     RepeatedModifierID,
@@ -117,7 +118,13 @@ public enum ErrorMessageID {
     UnapplyInvalidNumberOfArgumentsID,
     StaticFieldsOnlyAllowedInObjectsID,
     CyclicInheritanceID,
+    BadSymbolicReferenceID,
     UnableToExtendSealedClassID,
+    SymbolHasUnparsableVersionNumberID,
+    SymbolChangedSemanticsInVersionID,
+    UnableToEmitSwitchID,
+    MissingCompanionForStaticID,
+    PolymorphicMethodMissingTypeInParentID,
     ;
 
     public int errorNumber() {

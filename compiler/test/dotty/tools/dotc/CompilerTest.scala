@@ -104,13 +104,17 @@ abstract class CompilerTest {
           else (fp, jfp)
         }
       val expErrors = expectedErrors(filePaths.toList)
-      (filePaths, javaFilePaths, normArgs, expErrors)
+      (filePaths.sorted, javaFilePaths.sorted, normArgs, expErrors)
     }
     if (runTest)
       log(s"WARNING: run tests can only be run by partest, JUnit just verifies compilation: $prefix$dirName")
     val (filePaths, javaFilePaths, normArgs, expErrors) = computeFilePathsAndExpErrors
-    compileWithJavac(javaFilePaths, Array.empty) // javac needs to run first on dotty-library
-    compileArgs(javaFilePaths ++ filePaths ++ normArgs, expErrors)
+    if (filePaths.exists(_.endsWith("_1.scala"))) {
+      log(s"WARNING: separate compilation test can not be run as legacy test: $prefix$dirName")
+    } else {
+      compileWithJavac(javaFilePaths, Array.empty) // javac needs to run first on dotty-library
+      compileArgs(javaFilePaths ++ filePaths ++ normArgs, expErrors)
+    }
   }
   def runDir(prefix: String, dirName: String, args: List[String] = Nil)
       (implicit defaultOptions: List[String]): Unit =
@@ -149,7 +153,8 @@ abstract class CompilerTest {
 
   private def expectedErrors(filePath: String): List[ErrorsInFile] = expectedErrors(List(filePath))
 
-  private def isNegTest(testPath: String) = testPath.contains("/neg/")
+  private def isNegTest(testPath: String) =
+    testPath.contains("/neg/") || testPath.contains("/neg-custom-args/") || testPath.contains("/neg-tailcall/")
 
   private def compileArgs(args: Array[String], expectedErrorsPerFile: List[ErrorsInFile])
       (implicit defaultOptions: List[String]): Unit = {

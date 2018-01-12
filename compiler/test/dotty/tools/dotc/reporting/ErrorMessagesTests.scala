@@ -493,7 +493,7 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       val DoesNotConformToBound(tpe, which, bound) :: Nil = messages
       assertEquals("Int", tpe.show)
       assertEquals("upper", which)
-      assertEquals("scala.collection.immutable.List[Int]", bound.show)
+      assertEquals("List[Int]", bound.show)
     }
 
   @Test def doesNotConformToSelfType =
@@ -799,6 +799,21 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       assertMessageCount(1, messages)
       val err :: Nil = messages
       assertEquals(err, ExpectedClassOrObjectDef())
+    }
+
+  @Test def implicitClassPrimaryConstructorArity =
+    checkMessagesAfter("frontend") {
+      """
+        |object Test {
+        |  implicit class Foo(i: Int, s: String)
+        |}
+      """.stripMargin
+    }
+    .expect { (itcx, messages) =>
+      implicit val ctx: Context = itcx
+      assertMessageCount(1, messages)
+      val err :: Nil = messages
+      assertEquals(err, ImplicitClassPrimaryConstructorArity())
     }
 
   @Test def anonymousFunctionMissingParamType =
@@ -1248,5 +1263,35 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       assertMessageCount(1, messages)
       val CyclicInheritance(symbol, _) :: Nil = messages
       assertEquals("class A", symbol.show)
+    }
+
+  @Test def missingCompanionForStatic =
+    checkMessagesAfter("checkStatic") {
+      """
+        |object Foo {
+        |  @annotation.static def bar(): Unit = ()
+        |}
+      """.stripMargin
+    }.expect { (itcx, messages) =>
+      implicit val ctx: Context = itcx
+      val MissingCompanionForStatic(member) = messages.head
+      assertEquals(member.show, "method bar")
+    }
+
+  @Test def polymorphicMethodMissingTypeInParent =
+    checkMessagesAfter("frontend") {
+      """
+        |object Test {
+        |  import scala.reflect.Selectable.reflectiveSelectable
+        |  def foo(x: { def get[T](a: T): Int }) = 5
+        |}
+      """.stripMargin
+    }.expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+
+      assertMessageCount(1, messages)
+      val PolymorphicMethodMissingTypeInParent(rsym, parentSym) = messages.head
+      assertEquals("method get", rsym.show)
+      assertEquals("class Object", parentSym.show)
     }
 }

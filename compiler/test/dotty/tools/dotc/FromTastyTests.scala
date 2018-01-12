@@ -22,11 +22,38 @@ class FromTastyTests extends ParallelTesting {
 
   @Test def posTestFromTasty: Unit = {
     implicit val testGroup: TestGroup = TestGroup("posTestFromTasty")
-    val (step1, step2) = {
-      // compileTastyInDir("../tests/pos", defaultOptions) + // FIXME
-      compileTastyInDir("../tests/pos-from-tasty", defaultOptions) +
-      compileTasty("../tests/pos-from-tasty/simpleClass.scala", defaultOptions)
-    }
+    val (step1, step2) = compileTastyInDir("../tests/pos", defaultOptions,
+      blacklist = Set(
+        "Meter.scala",
+        "NoCyclicReference.scala",
+        "depfuntype.scala",
+        "hklub0.scala",
+        "i0306.scala",
+        "i1365.scala",
+        "i1795.scala",
+        "i2345.scala",
+        "i2888.scala",
+        "i2944.scala",
+        "i2980.scala",
+        "i3000.scala",
+        "i536.scala",
+        "i974.scala",
+        "quote-liftable.scala",
+        "quote-0.scala",
+        "quote-1.scala",
+        "quote-stagedInterpreter.scala",
+        "superacc.scala",
+        "t0231.scala",
+        "t1203a.scala",
+        "t2260.scala",
+        "t3612.scala", // Test never finishes
+        "t3800.scala",
+        "t4579.scala",
+        "t8023.scala",
+        "tcpoly_ticket2096.scala",
+        "t247.scala",
+      )
+    )
     step1.checkCompile() // Compile all files to generate the class files with tasty
     step2.checkCompile() // Compile from tasty
     (step1 + step2).delete()
@@ -34,11 +61,36 @@ class FromTastyTests extends ParallelTesting {
 
   @Test def runTestFromTasty: Unit = {
     implicit val testGroup: TestGroup = TestGroup("runTestFromTasty")
-    val (step1, step2) = {
-      // compileTastyInDir("../tests/run", defaultOptions) + // FIXME
-      compileTastyInDir("../tests/run-from-tasty", defaultOptions) +
-      compileTasty("../tests/run/t493.scala", defaultOptions)
-    }
+    val (step1, step2) = compileTastyInDir("../tests/run", defaultOptions,
+       blacklist = Set(
+         "Course-2002-13.scala",
+         "NestedClasses.scala",
+         "bridges.scala",
+         "eff-dependent.scala",
+         "enum-approx.scala",
+         "i2337.scala",
+         "i2337b.scala",
+         "inlineForeach.scala",
+         "patmat-bind-typed.scala",
+         "phantom-decls-1.scala",
+         "phantom-decls-3.scala",
+         "phantom-decls-5.scala",
+         "phantom-hk-1.scala",
+         "phantom-hk-2.scala",
+         "phantom-in-value-class.scala",
+         "phantom-methods-3.scala",
+         "phantom-methods-4.scala",
+         "phantom-poly-1.scala",
+         "phantom-poly-2.scala",
+         "phantom-poly-3.scala",
+         "phantom-poly-4.scala",
+         "scala2trait-lazyval.scala",
+         "t3452f.scala",
+         "t493.scala",
+         "t8395.scala",
+         "t3613.scala",
+       )
+    )
     step1.checkCompile() // Compile all files to generate the class files with tasty
     step2.checkRuns() // Compile from tasty and run the result
     (step1 + step2).delete()
