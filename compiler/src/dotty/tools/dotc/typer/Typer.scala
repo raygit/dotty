@@ -79,7 +79,14 @@ object Typer {
   private val DroppedEmptyArgs = new Property.Key[Unit]
 }
 
-class Typer extends Namer with TypeAssigner with Applications with Implicits with Dynamic with Checking with Docstrings {
+class Typer extends Namer
+               with TypeAssigner
+               with Applications
+               with Implicits
+               with Inferencing
+               with Dynamic
+               with Checking
+               with Docstrings {
 
   import Typer._
   import tpd.{cpy => _, _}
@@ -1945,8 +1952,8 @@ class Typer extends Namer with TypeAssigner with Applications with Implicits wit
     /*>|>*/ trace(i"adapting $tree of type ${tree.tpe} to $pt", typr, show = true) /*<|<*/ {
       if (!tree.denot.isOverloaded) {
       	// for overloaded trees: resolve overloading before simplifying
-        if (tree.isDef) interpolateUndetVars(tree, tree.symbol)
-        else if (!tree.tpe.widen.isInstanceOf[LambdaType]) interpolateUndetVars(tree, NoSymbol)
+        if (tree.isDef) interpolateUndetVars(tree, tree.symbol, pt)
+        else if (!tree.tpe.widen.isInstanceOf[LambdaType]) interpolateUndetVars(tree, NoSymbol, pt)
         tree.overwriteType(tree.tpe.simplified)
       }
       adaptInterpolated(tree, pt)
@@ -2073,7 +2080,7 @@ class Typer extends Namer with TypeAssigner with Applications with Implicits wit
       val constraint = ctx.typerState.constraint
       def inst(tp: Type): Type = tp match {
         case TypeBounds(lo, hi)
-        if (lo eq hi) || ctx.typerState.test(hi <:< lo) =>
+        if (lo eq hi) || ctx.test(implicit ctx => hi <:< lo) =>
           inst(lo)
         case tp: TypeParamRef =>
           constraint.typeVarOfParam(tp).orElse(tp)
@@ -2370,7 +2377,16 @@ class Typer extends Namer with TypeAssigner with Applications with Implicits wit
     def adaptType(tp: Type): Tree = {
       val tree1 =
         if ((pt eq AnyTypeConstructorProto) || tp.typeParamSymbols.isEmpty) tree
-        else tree.withType(tree.tpe.EtaExpand(tp.typeParamSymbols))
+        else {
+          val tp1 =
+            if (ctx.compilationUnit.isJava)
+              // Cook raw type
+              AppliedType(tree.tpe, tp.typeParams.map(Function.const(TypeBounds.empty)))
+            else
+              // Eta-expand higher-kinded type
+              tree.tpe.EtaExpand(tp.typeParamSymbols)
+          tree.withType(tp1)
+        }
       if ((ctx.mode is Mode.Pattern) || tree1.tpe <:< pt) tree1
       else err.typeMismatch(tree1, pt)
     }
