@@ -227,15 +227,15 @@ trait ConstraintHandling {
         }
       }
     }
-    if (constraint.contains(param)) {
-      val bound = if (fromBelow) constraint.fullLowerBound(param) else constraint.fullUpperBound(param)
-      val inst = avoidParam(bound)
-      typr.println(s"approx ${param.show}, from below = $fromBelow, bound = ${bound.show}, inst = ${inst.show}")
-      inst
-    }
-    else {
-      assert(ctx.mode.is(Mode.Interactive))
-      UnspecifiedErrorType
+    constraint.entry(param) match {
+      case _: TypeBounds =>
+        val bound = if (fromBelow) constraint.fullLowerBound(param) else constraint.fullUpperBound(param)
+        val inst = avoidParam(bound)
+        typr.println(s"approx ${param.show}, from below = $fromBelow, bound = ${bound.show}, inst = ${inst.show}")
+        inst
+      case inst =>
+        assert(inst.exists, i"param = $param\n constraint = $constraint")
+        inst
     }
   }
 
@@ -272,10 +272,10 @@ trait ConstraintHandling {
 
     // Then, approximate by (1.) - (3.) and simplify as follows.
     // 1. If instance is from below and is a singleton type, yet upper bound is
-    // not a singleton type or a reference to `scala.Singleton`, widen the
+    // not a singleton type or a subtype of `scala.Singleton`, widen the
     // instance.
     if (fromBelow && isMultiSingleton(inst) && !isMultiSingleton(upperBound)
-        && !upperBound.isRef(defn.SingletonClass))
+        && !isSubTypeWhenFrozen(upperBound, defn.SingletonType))
       inst = inst.widen
 
     // 2. If instance is from below and is a fully-defined union type, yet upper bound

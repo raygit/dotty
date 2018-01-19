@@ -8,7 +8,9 @@ import java.util.Calendar
 
 import scala.reflect.io.Path
 import sbtassembly.AssemblyKeys.assembly
-import xerial.sbt.Pack._
+
+import xerial.sbt.pack.PackPlugin
+import xerial.sbt.pack.PackPlugin.autoImport._
 
 import sbt.Package.ManifestAttributes
 
@@ -38,7 +40,7 @@ object ExposedValues extends AutoPlugin {
 
 object Build {
 
-  val baseVersion = "0.6.0"
+  val baseVersion = "0.7.0"
   val scalacVersion = "2.12.4"
 
   val dottyOrganization = "ch.epfl.lamp"
@@ -389,18 +391,21 @@ object Build {
         (runMain in Compile).toTask(s""" dotty.tools.dottydoc.Main ${cp.mkString(" ")} """ + args.mkString(" "))
     }.evaluated,
 
-    libraryDependencies ++= Seq(
-      "com.vladsch.flexmark" % "flexmark" % "0.11.1",
-      "com.vladsch.flexmark" % "flexmark-ext-gfm-tasklist" % "0.11.1",
-      "com.vladsch.flexmark" % "flexmark-ext-gfm-tables" % "0.11.1",
-      "com.vladsch.flexmark" % "flexmark-ext-autolink" % "0.11.1",
-      "com.vladsch.flexmark" % "flexmark-ext-anchorlink" % "0.11.1",
-      "com.vladsch.flexmark" % "flexmark-ext-emoji" % "0.11.1",
-      "com.vladsch.flexmark" % "flexmark-ext-gfm-strikethrough" % "0.11.1",
-      "com.vladsch.flexmark" % "flexmark-ext-yaml-front-matter" % "0.11.1",
-      Dependencies.`jackson-dataformat-yaml`,
-      "nl.big-o" % "liqp" % "0.6.7"
-    )
+    libraryDependencies ++= {
+      val flexmarkVersion = "0.28.32"
+      Seq(
+        "com.vladsch.flexmark" % "flexmark" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-gfm-tasklist" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-gfm-tables" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-autolink" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-anchorlink" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-emoji" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-gfm-strikethrough" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-yaml-front-matter" % flexmarkVersion,
+        Dependencies.`jackson-dataformat-yaml`,
+        "nl.big-o" % "liqp" % "0.6.7"
+      )
+    }
   )
 
   lazy val `dotty-doc` = project.in(file("doc-tool")).asDottyDoc(NonBootstrapped)
@@ -770,7 +775,7 @@ object Build {
       // (you need to have `cancelable in Global := true` in your global sbt config to ctrl+c a run)
       fork in run := true,
       libraryDependencies ++= Seq(
-        "org.eclipse.lsp4j" % "org.eclipse.lsp4j" % "0.2.0",
+        "org.eclipse.lsp4j" % "org.eclipse.lsp4j" % "0.3.0",
         Dependencies.`jackson-databind`
       ),
       javaOptions := (javaOptions in `dotty-compiler-bootstrapped`).value,
@@ -900,7 +905,7 @@ object Build {
     settings(commonSettings).
     settings(
       EclipseKeys.skipProject := true,
-      version := "0.1.2", // Keep in sync with package.json
+      version := "0.1.3", // Keep in sync with package.json
 
       autoScalaLibrary := false,
       publishArtifact := false,
@@ -1121,9 +1126,10 @@ object Build {
     ))
   }
 
-  lazy val commonDistSettings = packSettings ++ Seq(
+  lazy val commonDistSettings = Seq(
     packMain := Map(),
     publishArtifact := false,
+    packGenerateMakefile := false,
     packExpandedClasspath := true,
     packResourceDir += (baseDirectory.value / "bin" -> "bin"),
     packArchiveName := "dotty-" + dottyVersion
@@ -1171,11 +1177,10 @@ object Build {
       settings(commonBenchmarkSettings).
       enablePlugins(JmhPlugin)
 
-    def asDist(implicit mode: Mode): Project = project.withCommonSettings.
-      dependsOn(`dotty-interfaces`).
-      dependsOn(dottyCompiler).
-      dependsOn(dottyLibrary).
-      dependsOn(dottyDoc).
+    def asDist(implicit mode: Mode): Project = project.
+      enablePlugins(PackPlugin).
+      withCommonSettings.
+      dependsOn(`dotty-interfaces`, dottyCompiler, dottyLibrary, dottyDoc).
       settings(commonDistSettings).
       bootstrappedSettings(target := baseDirectory.value / "target") // override setting in commonBootstrappedSettings
 
