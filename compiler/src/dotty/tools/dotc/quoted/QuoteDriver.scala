@@ -1,17 +1,18 @@
 package dotty.tools.dotc.quoted
 
+import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.Driver
 import dotty.tools.dotc.core.Contexts.Context
-import dotty.tools.dotc.core.StdNames._
 import dotty.tools.io.{AbstractFile, Directory, PlainDirectory, VirtualDirectory}
 import dotty.tools.repl.AbstractFileClassLoader
+import dotty.tools.dotc.printing.DecompilerPrinter
 
 import scala.quoted.Expr
-import java.io.ByteArrayOutputStream
-import java.io.PrintStream
-import java.nio.charset.StandardCharsets
+
+import java.net.URLClassLoader
 
 class QuoteDriver extends Driver {
+  import tpd._
 
   def run[T](expr: Expr[T], settings: Runners.RunSettings): T = {
     val ctx: Context = initCtx.fresh
@@ -39,23 +40,37 @@ class QuoteDriver extends Driver {
   }
 
   def show(expr: Expr[_]): String = {
+    def show(tree: Tree, ctx: Context): String = {
+      val printer = new DecompilerPrinter(ctx)
+      val pageWidth = ctx.settings.pageWidth.value(ctx)
+      printer.toText(tree).mkString(pageWidth, false)
+    }
+    withTree(expr, show)
+  }
+
+  def withTree[T](expr: Expr[_], f: (Tree, Context) => T): T = {
     val ctx: Context = initCtx.fresh
     ctx.settings.color.update("never")(ctx) // TODO support colored show
-    val baos = new ByteArrayOutputStream
-    var ps: PrintStream = null
-    try {
-      ps = new PrintStream(baos, true, "utf-8")
-
-      new ExprDecompiler(ps).newRun(ctx).compileExpr(expr)
-
-      new String(baos.toByteArray, StandardCharsets.UTF_8)
+    var output: Option[T] = None
+    def registerTree(tree: tpd.Tree)(ctx: Context): Unit = {
+      assert(output.isEmpty)
+      output = Some(f(tree, ctx))
     }
-    finally if (ps != null) ps.close()
+    new ExprDecompiler(registerTree).newRun(ctx).compileExpr(expr)
+    output.getOrElse(throw new Exception("Could not extact " + expr))
   }
 
   override def initCtx: Context = {
     val ictx = super.initCtx.fresh
-    val classpath = System.getProperty("java.class.path")
+    var classpath = System.getProperty("java.class.path")
+    this.getClass.getClassLoader match {
+      case cl: URLClassLoader =>
+        // Loads the classes loaded by this class loader
+        // When executing `run` or `test` in sbt the classpath is not in the property java.class.path
+        val newClasspath = cl.getURLs.map(_.getFile())
+        classpath = newClasspath.mkString("", ":", if (classpath == "") "" else ":" + classpath)
+      case _ =>
+    }
     ictx.settings.classpath.update(classpath)(ictx)
     ictx
   }
