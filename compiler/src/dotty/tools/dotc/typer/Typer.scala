@@ -1141,20 +1141,19 @@ class Typer extends Namer
         bindings1, expansion1)
   }
 
-  def typedTypeTree(tree: untpd.TypeTree, pt: Type)(implicit ctx: Context): TypeTree = track("typedTypeTree") {
+  def typedTypeTree(tree: untpd.TypeTree, pt: Type)(implicit ctx: Context): Tree = track("typedTypeTree") {
     tree match {
       case tree: untpd.DerivedTypeTree =>
         tree.ensureCompletions
-        try
-          TypeTree(tree.derivedType(tree.attachment(untpd.OriginalSymbol))) withPos tree.pos
-        // btw, no need to remove the attachment. The typed
-        // tree is different from the untyped one, so the
-        // untyped tree is no longer accessed after all
-        // accesses with typedTypeTree are done.
-        catch {
-          case ex: NoSuchElementException =>
-            println(s"missing OriginalSymbol for ${ctx.owner.ownersIterator.toList}")
-            throw ex
+        tree.getAttachment(untpd.OriginalSymbol) match {
+          case Some(origSym) =>
+            TypeTree(tree.derivedType(origSym)).withPos(tree.pos)
+            // btw, no need to remove the attachment. The typed
+            // tree is different from the untyped one, so the
+            // untyped tree is no longer accessed after all
+            // accesses with typedTypeTree are done.
+          case None =>
+            errorTree(tree, "Something's wrong: missing original symbol for type tree")
         }
       case _ =>
         tree.withType(
@@ -1779,8 +1778,7 @@ class Typer extends Namer
 
   protected def makeImplicitFunction(tree: untpd.Tree, pt: Type)(implicit ctx: Context): Tree = {
     val defn.FunctionOf(formals, _, true) = pt.dropDependentRefinement
-    val paramTypes = formals.map(fullyDefinedType(_, "implicit function parameter", tree.pos))
-    val ifun = desugar.makeImplicitFunction(paramTypes, tree)
+    val ifun = desugar.makeImplicitFunction(formals, tree)
     typr.println(i"make implicit function $tree / $pt ---> $ifun")
     typed(ifun, pt)
   }
