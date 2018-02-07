@@ -127,9 +127,7 @@ object Types {
     def isRef(sym: Symbol)(implicit ctx: Context): Boolean = stripAnnots.stripTypeVar match {
       case this1: TypeRef =>
         this1.info match { // see comment in Namer#typeDefSig
-          case TypeAlias(tp) =>
-            assert((tp ne this) && (tp ne this1), s"$tp / $this")
-            tp.isRef(sym)
+          case TypeAlias(tp) => tp.isRef(sym)
           case _ => this1.symbol eq sym
         }
       case this1: RefinedOrRecType =>
@@ -3308,7 +3306,7 @@ object Types {
     def isInstantiated(implicit ctx: Context) = instanceOpt.exists
 
     /** Instantiate variable with given type */
-    private def instantiateWith(tp: Type)(implicit ctx: Context): Type = {
+    def instantiateWith(tp: Type)(implicit ctx: Context): Type = {
       assert(tp ne this, s"self instantiation of ${tp.show}, constraint = ${ctx.typerState.constraint.show}")
       typr.println(s"instantiating ${this.show} with ${tp.show}")
       if ((ctx.typerState eq owningState.get) && !ctx.typeComparer.subtypeCheckInProgress)

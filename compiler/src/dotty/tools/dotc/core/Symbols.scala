@@ -219,6 +219,14 @@ trait Symbols { this: Context =>
       modFlags | PackageCreationFlags, clsFlags | PackageCreationFlags,
       Nil, decls)
 
+  /** Define a new symbol associated with a Bind or pattern wildcard and
+   *  make it gadt narrowable.
+   */
+  def newPatternBoundSymbol(name: Name, info: Type, pos: Position) = {
+    val sym = newSymbol(owner, name, Case, info, coord = pos)
+    if (name.isTypeName) gadt.setBounds(sym, info.bounds)
+    sym
+  }
 
   /** Create a stub symbol that will issue a missing reference error
    *  when attempted to be completed.
@@ -235,7 +243,6 @@ trait Symbols { this: Context =>
       case name: TypeName =>
         newClassSymbol(normalizedOwner, name, EmptyFlags, stubCompleter, assocFile = file)
     }
-    stubs = stub :: stubs
     stub
   }
 
@@ -369,7 +376,10 @@ trait Symbols { this: Context =>
   def requiredPackageRef(path: PreName): TermRef = requiredPackage(path).termRef
 
   def requiredClass(path: PreName): ClassSymbol =
-    base.staticRef(path.toTypeName).requiredSymbol(_.isClass).asClass
+    base.staticRef(path.toTypeName).requiredSymbol(_.isClass) match {
+      case cls: ClassSymbol => cls
+      case sym => defn.AnyClass
+    }
 
   def requiredClassRef(path: PreName): TypeRef = requiredClass(path).typeRef
 
@@ -691,8 +701,6 @@ object Symbols {
 
   /** The current class */
   def currentClass(implicit ctx: Context): ClassSymbol = ctx.owner.enclosingClass.asClass
-
-  @sharable var stubs: List[Symbol] = Nil // diagnostic only
 
   /* Mutable map from symbols any T */
   class MutableSymbolMap[T](private[Symbols] val value: java.util.IdentityHashMap[Symbol, T]) extends AnyVal {
