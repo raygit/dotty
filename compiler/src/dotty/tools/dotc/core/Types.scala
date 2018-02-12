@@ -732,7 +732,7 @@ object Types {
     }
 
     /** The set of member classes of this type */
-    final def memberClasses(implicit ctx: Context): Seq[SingleDenotation] = track("implicitMembers") {
+    final def memberClasses(implicit ctx: Context): Seq[SingleDenotation] = track("memberClasses") {
       memberDenots(typeNameFilter,
         (name, buf) => buf ++= member(name).altsWith(x => x.isClass))
     }
@@ -743,9 +743,14 @@ object Types {
     }
 
     /** The set of members of this type having at least one of `requiredFlags` but none of `excludedFlags` set */
-    final def membersBasedOnFlags(requiredFlags: FlagSet, excludedFlags: FlagSet)(implicit ctx: Context): Seq[SingleDenotation] = track("implicitMembers") {
+    final def membersBasedOnFlags(requiredFlags: FlagSet, excludedFlags: FlagSet)(implicit ctx: Context): Seq[SingleDenotation] = track("membersBasedOnFlags") {
       memberDenots(takeAllFilter,
         (name, buf) => buf ++= memberExcluding(name, excludedFlags).altsWith(x => x.is(requiredFlags)))
+    }
+
+    /** All members of this type. Warning: this can be expensive to compute! */
+    final def allMembers(implicit ctx: Context): Seq[SingleDenotation] = track("allMembers") {
+      memberDenots(takeAllFilter, (name, buf) => buf ++= member(name).alternatives)
     }
 
     /** The info of `sym`, seen as a member of this type. */
@@ -1754,21 +1759,25 @@ object Types {
 
       val idx = typeParams.indexOf(param)
 
-      assert(args.nonEmpty,
-      	i"""bad parameter reference $this at ${ctx.phase}
-      	   |the parameter is ${param.showLocated} but the prefix $prefix
-      	   |does not define any corresponding arguments.""")
-
-      val argInfo = args(idx) match {
-        case arg: TypeBounds =>
-          val v = param.paramVariance
-          val pbounds = param.paramInfo
-          if (v > 0 && pbounds.loBound.dealias.isBottomType) TypeAlias(arg.hiBound & rebase(pbounds.hiBound))
-          else if (v < 0 && pbounds.hiBound.dealias.isTopType) TypeAlias(arg.loBound | rebase(pbounds.loBound))
-          else arg recoverable_& rebase(pbounds)
-        case arg => TypeAlias(arg)
+      if (idx < args.length) {
+        val argInfo = args(idx) match {
+          case arg: TypeBounds =>
+            val v = param.paramVariance
+            val pbounds = param.paramInfo
+            if (v > 0 && pbounds.loBound.dealias.isBottomType) TypeAlias(arg.hiBound & rebase(pbounds.hiBound))
+            else if (v < 0 && pbounds.hiBound.dealias.isTopType) TypeAlias(arg.loBound | rebase(pbounds.loBound))
+            else arg recoverable_& rebase(pbounds)
+          case arg => TypeAlias(arg)
+        }
+        param.derivedSingleDenotation(param, argInfo)
       }
-      param.derivedSingleDenotation(param, argInfo)
+      else {
+        assert(ctx.reporter.errorsReported,
+          i"""bad parameter reference $this at ${ctx.phase}
+            |the parameter is ${param.showLocated} but the prefix $prefix
+            |does not define any corresponding arguments.""")
+        NoDenotation
+      }
     }
 
     /** Reload denotation by computing the member with the reference's name as seen
