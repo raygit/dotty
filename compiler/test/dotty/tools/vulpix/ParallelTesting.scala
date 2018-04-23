@@ -48,7 +48,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
   /** A test source whose files or directory of files is to be compiled
    *  in a specific way defined by the `Test`
    */
-  private sealed trait TestSource { self =>
+  sealed trait TestSource { self =>
     def name: String
     def outDir: JFile
     def flags: TestFlags
@@ -145,7 +145,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
   /** A test source whose files will be compiled separately according to their
    *  suffix `_X`
    */
-  private case class SeparateCompilationSource(
+  case class SeparateCompilationSource(
     name: String,
     dir: JFile,
     flags: TestFlags,
@@ -284,30 +284,29 @@ trait ParallelTesting extends RunnerOrchestration { self =>
     }
 
     /** A single `Runnable` that prints a progress bar for the curent `Test` */
-    private def createProgressMonitor: Runnable = new Runnable {
-      def run(): Unit = {
-        val start = System.currentTimeMillis
-        var tCompiled = testSourcesCompleted
-        while (tCompiled < sourceCount) {
-          val timestamp = (System.currentTimeMillis - start) / 1000
-          val progress = (tCompiled.toDouble / sourceCount * 40).toInt
+    private def createProgressMonitor: Runnable = () => {
+      val start = System.currentTimeMillis
+      var tCompiled = testSourcesCompleted
+      while (tCompiled < sourceCount) {
+        val timestamp = (System.currentTimeMillis - start) / 1000
+        val progress = (tCompiled.toDouble / sourceCount * 40).toInt
 
-          realStdout.print(
-            "[" + ("=" * (math.max(progress - 1, 0))) +
+        realStdout.print(
+          "[" + ("=" * (math.max(progress - 1, 0))) +
             (if (progress > 0) ">" else "") +
             (" " * (39 - progress)) +
-            s"] completed ($tCompiled/$sourceCount, ${timestamp}s)\r"
-          )
-
-          Thread.sleep(100)
-          tCompiled = testSourcesCompleted
-        }
-        // println, otherwise no newline and cursor at start of line
-        realStdout.println(
-          s"[=======================================] completed ($sourceCount/$sourceCount, " +
-          s"${(System.currentTimeMillis - start) / 1000}s)  "
+            s"] completed ($tCompiled/$sourceCount, $errorCount failed, ${timestamp}s)\r"
         )
+
+        Thread.sleep(100)
+        tCompiled = testSourcesCompleted
       }
+
+      val timestamp = (System.currentTimeMillis - start) / 1000
+      // println, otherwise no newline and cursor at start of line
+      realStdout.println(
+        s"[=======================================] completed ($sourceCount/$sourceCount, $errorCount failed, ${timestamp}s)"
+      )
     }
 
     /** Wrapper function to make sure that the compiler itself did not crash -
@@ -433,7 +432,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
 
       def hasTastyFileToClassName(f: JFile): String =
         targetDir.toPath.relativize(f.toPath).toString.dropRight(".hasTasty".length).replace('/', '.')
-      val classes = flattenFiles(targetDir).filter(isHasTastyFile).map(hasTastyFileToClassName)
+      val classes = flattenFiles(targetDir).filter(isHasTastyFile).map(hasTastyFileToClassName).sorted
 
       val reporter =
         TestReporter.reporter(realStdout, logLevel =
@@ -453,7 +452,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
     }
 
     private[ParallelTesting] def executeTestSuite(): this.type = {
-      assert(_testSourcesCompleted == 0, "not allowed to re-use a `CompileRun`")
+      assert(testSourcesCompleted == 0, "not allowed to re-use a `CompileRun`")
 
       if (filteredSources.nonEmpty) {
         val pool = threadLimit match {
@@ -613,10 +612,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
 
           if (outputLines.length != checkLines.length || !linesMatch) {
             // Print diff to files and summary:
-            val expectedSize = DiffUtil.EOF.length max checkLines.map(_.length).max
-            val diff = outputLines.padTo(checkLines.length, "").zip(checkLines.padTo(outputLines.length, "")).map { case (act, exp) =>
-              DiffUtil.mkColoredLineDiff(exp, act, expectedSize)
-            }.mkString("\n")
+            val diff = DiffUtil.mkColoredLineDiff(checkLines, outputLines)
 
             val msg =
               s"""|Output from '$sourceTitle' did not match check file.
@@ -919,10 +915,10 @@ trait ParallelTesting extends RunnerOrchestration { self =>
   ) {
     import org.junit.Assert.fail
 
-    private[ParallelTesting] def this(target: TestSource) =
+    def this(target: TestSource) =
       this(List(target), 1, true, None, false, false)
 
-    private[ParallelTesting] def this(targets: List[TestSource]) =
+    def this(targets: List[TestSource]) =
       this(targets, 1, true, None, false, false)
 
     /** Compose test targets from `this` with `other`
@@ -954,6 +950,8 @@ trait ParallelTesting extends RunnerOrchestration { self =>
     def checkCompile()(implicit summaryReport: SummaryReporting): this.type = {
       val test = new PosTest(targets, times, threadLimit, shouldFail || shouldSuppressOutput).executeTestSuite()
 
+      cleanup()
+
       if (!shouldFail && test.didFail) {
         fail(s"Expected no errors when compiling, failed for the following reason(s):\n${ reasonsForFailure(test) }")
       }
@@ -961,7 +959,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
         fail("Pos test should have failed, but didn't")
       }
 
-      cleanup()
+      this
     }
 
     /** Creates a "neg" test run, which makes sure that each test generates the
@@ -971,6 +969,8 @@ trait ParallelTesting extends RunnerOrchestration { self =>
     def checkExpectedErrors()(implicit summaryReport: SummaryReporting): this.type = {
       val test = new NegTest(targets, times, threadLimit, shouldFail || shouldSuppressOutput).executeTestSuite()
 
+      cleanup()
+
       if (!shouldFail && test.didFail) {
         fail(s"Neg test shouldn't have failed, but did. Reasons:\n${ reasonsForFailure(test) }")
       }
@@ -978,7 +978,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
         fail("Neg test should have failed, but did not")
       }
 
-      cleanup()
+      this
     }
 
     /** Creates a "run" test run, which is a superset of "pos". In addition to
@@ -989,6 +989,8 @@ trait ParallelTesting extends RunnerOrchestration { self =>
     def checkRuns()(implicit summaryReport: SummaryReporting): this.type = {
       val test = new RunTest(targets, times, threadLimit, shouldFail || shouldSuppressOutput).executeTestSuite()
 
+      cleanup()
+
       if (!shouldFail && test.didFail) {
         fail(s"Run test failed, but should not, reasons:\n${ reasonsForFailure(test) }")
       }
@@ -996,7 +998,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
         fail("Run test should have failed, but did not")
       }
 
-      cleanup()
+      this
     }
 
     /** Deletes output directories and files */
@@ -1099,7 +1101,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
   }
 
   /** Create out directory for directory `d` */
-  private def createOutputDirsForDir(d: JFile, sourceDir: JFile, outDir: String): JFile = {
+  def createOutputDirsForDir(d: JFile, sourceDir: JFile, outDir: String): JFile = {
     val targetDir = new JFile(outDir + s"${sourceDir.getName}/${d.getName}")
     targetDir.mkdirs()
     targetDir
@@ -1207,7 +1209,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
    *  `f` in a specific way.
    *
    *  - Each file is compiled separately as a single compilation run
-   *  - Each directory is compiled as a `SeparateCompilationTaret`, in this
+   *  - Each directory is compiled as a `SeparateCompilationTarget`, in this
    *    target all files are grouped according to the file suffix `_X` where `X`
    *    is a number. These groups are then ordered in ascending order based on
    *    the value of `X` and each group is compiled one after the other.
@@ -1239,7 +1241,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
    *  `f` in a specific way. Once compiled, they are recompiled/run from tasty as sources.
    *
    *  - Each file is compiled separately as a single compilation run
-   *  - Each directory is compiled as a `SeparateCompilationTaret`, in this
+   *  - Each directory is compiled as a `SeparateCompilationTarget`, in this
    *    target all files are grouped according to the file suffix `_X` where `X`
    *    is a number. These groups are then ordered in ascending order based on
    *    the value of `X` and each group is compiled one after the other.
@@ -1312,7 +1314,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
 
 object ParallelTesting {
 
-  def defaultOutputDir: String = "../out/"
+  def defaultOutputDir: String = "out/"
 
   def isSourceFile(f: JFile): Boolean = {
     val name = f.getName

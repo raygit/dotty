@@ -15,6 +15,8 @@ sidebar:
           url: docs/usage/dottydoc.html
     - title: Reference
       subsection:
+        - title: Overview
+          url: docs/reference/overview.html
         - title: New Types
           subsection:
             - title: Intersection types
@@ -27,10 +29,6 @@ sidebar:
               url: docs/reference/implicit-function-types.html
             - title: Dependent Function Types
               url: docs/reference/dependent-function-types.html
-            - title: Phantom Types
-              url: docs/reference/phantom-types.html
-            - title: Literal Singleton Types
-              url: docs/reference/singleton-types.html
         - title: Enums
           subsection:
             - title: Enumerations
@@ -55,6 +53,10 @@ sidebar:
               url: docs/reference/auto-parameter-tupling.html
             - title: Named Type Arguments
               url: docs/reference/named-typeargs.html
+            - title: Erased Terms
+              url: docs/reference/erased-terms.html
+            - title: Kind Polymorphism
+              url: docs/reference/kind-polymorphism.html
             - title: Local Optimisations
               url: docs/reference/optimisations.html
         - title: Changed Features

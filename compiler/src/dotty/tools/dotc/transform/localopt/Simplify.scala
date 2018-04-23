@@ -11,7 +11,6 @@ import core.NameOps._
 import transform.MegaPhase.MiniPhase
 import config.Printers.simplify
 import ast.tpd
-import dotty.tools.dotc.core.PhantomErasure
 
 import scala.annotation.tailrec
 
@@ -80,17 +79,19 @@ class Simplify extends MiniPhase with IdentityDenotTransformer {
   var fuel: Int = -1
 
   override def prepareForUnit(tree: Tree)(implicit ctx: Context) = {
-    SeqFactoryClass = ctx.requiredClass("scala.collection.generic.SeqFactory")
-    CommutativePrimitiveOperations = Set(defn.Boolean_&&, defn.Boolean_||, defn.Int_+, defn.Int_*, defn.Long_+, defn.Long_*)
+    if (ctx.settings.optimise.value) {
+      SeqFactoryClass = ctx.requiredClass("scala.collection.generic.SeqFactory")
+      CommutativePrimitiveOperations = Set(defn.Boolean_&&, defn.Boolean_||, defn.Int_+, defn.Int_*, defn.Long_+, defn.Long_*)
 
-    val maxFuel = ctx.settings.YoptFuel.value
-    if (fuel < 0 && maxFuel > 0) // Both defaults are at -1
-      fuel = maxFuel
+      val maxFuel = ctx.settings.YoptFuel.value
+      if (fuel < 0 && maxFuel > 0) // Both defaults are at -1
+        fuel = maxFuel
 
-    optimisations = {
-      val o = if (ctx.erasedTypes) afterErasure else beforeErasure
-      val p = ctx.settings.YoptPhases.value
-      if (p.isEmpty) o else o.filter(x => p.contains(x.name))
+      optimisations = {
+        val o = if (ctx.erasedTypes) afterErasure else beforeErasure
+        val p = ctx.settings.YoptPhases.value
+        if (p.isEmpty) o else o.filter(x => p.contains(x.name))
+      }
     }
 
     ctx
@@ -170,8 +171,6 @@ object Simplify {
                             sym.owner.is(CaseClass)                  &&
                             sym.name.isSelectorName                  &&
                             !sym.info.decls.exists(_.is(Mutable | Lazy)) // Conservatively covers case class A(var x: Int)
-    val isErasedPhantom   = PhantomErasure.isErasedPhantom(sym)
-
-    isImmutableGetter || isCaseAccessor || isProductAccessor || isErasedPhantom
+    isImmutableGetter || isCaseAccessor || isProductAccessor
   }
 }

@@ -35,6 +35,7 @@ import dotty.tools.dotc.profile.Profiler
 import util.Property.Key
 import util.Store
 import xsbti.AnalysisCallback
+import plugins._
 
 object Contexts {
 
@@ -76,6 +77,7 @@ object Contexts {
                             with SymDenotations
                             with Reporting
                             with NamerContextOps
+                            with Plugins
                             with Cloneable { thiscontext =>
     implicit def ctx: Context = this
 
@@ -131,7 +133,6 @@ object Contexts {
     private[this] var _typeAssigner: TypeAssigner = _
     protected def typeAssigner_=(typeAssigner: TypeAssigner) = _typeAssigner = typeAssigner
     def typeAssigner: TypeAssigner = _typeAssigner
-    def typer: Typer = _typeAssigner.asInstanceOf[Typer]
 
     /** The currently active import info */
     private[this] var _importInfo: ImportInfo = _
@@ -618,7 +619,8 @@ object Contexts {
         "uniqueNamedTypes" -> uniqueNamedTypes)
 
     /** A map that associates label and size of all uniques sets */
-    def uniquesSizes: Map[String, Int] = uniqueSets.mapValues(_.size)
+    def uniquesSizes: Map[String, (Int, Int, Int)] =
+      uniqueSets.mapValues(s => (s.size, s.accesses, s.misses))
 
     /** Number of findMember calls on stack */
     private[core] var findMemberCount: Int = 0

@@ -1,0 +1,4 @@
+{
+  val t: quoted.Type[String] = '[String]
+  t: quoted.Type[String]
+}

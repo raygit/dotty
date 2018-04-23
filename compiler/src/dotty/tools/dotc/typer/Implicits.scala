@@ -26,6 +26,7 @@ import Constants._
 import Applications._
 import ProtoTypes._
 import ErrorReporting._
+import Annotations.Annotation
 import reporting.diagnostic.{Message, MessageContainer}
 import Inferencing.fullyDefinedType
 import Trees._
@@ -78,7 +79,7 @@ object Implicits {
         def discardForView(tpw: Type, argType: Type): Boolean = tpw match {
           case mt: MethodType =>
             mt.isImplicitMethod ||
-            mt.paramInfos.length != 1 ||
+            mt.paramInfos.lengthCompare(1) != 0 ||
             !ctx.test(implicit ctx => argType relaxed_<:< mt.paramInfos.head)
           case poly: PolyType =>
             // We do not need to call ProtoTypes#constrained on `poly` because
@@ -186,7 +187,7 @@ object Implicits {
    *  @param outerCtx  the next outer context that makes visible further implicits
    */
   class ContextualImplicits(val refs: List[ImplicitRef], val outerImplicits: ContextualImplicits)(initctx: Context) extends ImplicitRefs(initctx) {
-    private val eligibleCache = new mutable.AnyRefMap[Type, List[Candidate]]
+    private val eligibleCache = new java.util.IdentityHashMap[Type, List[Candidate]]
 
     /** The level increases if current context has a different owner or scope than
      *  the context of the next-outer ImplicitRefs. This is however disabled under
@@ -211,8 +212,9 @@ object Implicits {
     /** The implicit references that are eligible for type `tp`. */
     def eligible(tp: Type): List[Candidate] = /*>|>*/ track(s"eligible in ctx") /*<|<*/ {
       if (tp.hash == NotCached) computeEligible(tp)
-      else eligibleCache get tp match {
-        case Some(eligibles) =>
+      else {
+        val eligibles = eligibleCache.get(tp)
+        if (eligibles != null) {
           def elided(ci: ContextualImplicits): Int = {
             val n = ci.refs.length
             if (ci.isOuterMost) n
@@ -220,18 +222,13 @@ object Implicits {
           }
           if (monitored) record(s"elided eligible refs", elided(this))
           eligibles
-        case None =>
-          if (ctx eq NoContext) Nil
-          else {
-            val savedEphemeral = ctx.typerState.ephemeral
-            ctx.typerState.ephemeral = false
-            try {
-              val result = computeEligible(tp)
-              if (ctx.typerState.ephemeral) record("ephemeral cache miss: eligible")
-              else eligibleCache(tp) = result
-              result
-            } finally ctx.typerState.ephemeral |= savedEphemeral
-          }
+        }
+        else if (ctx eq NoContext) Nil
+        else {
+          val result = computeEligible(tp)
+          eligibleCache.put(tp, result)
+          result
+        }
       }
     }
 
@@ -469,27 +466,20 @@ trait ImplicitRunInfo { self: Run =>
      *  @param isLifted    Type `tp` is the result of a `liftToClasses` application
      */
     def iscope(tp: Type, isLifted: Boolean = false): OfTypeImplicits = {
-      val canCache = Config.cacheImplicitScopes && tp.hash != NotCached
+      val canCache = Config.cacheImplicitScopes && tp.hash != NotCached && !tp.isProvisional
       def computeIScope() = {
-        val savedEphemeral = ctx.typerState.ephemeral
-        ctx.typerState.ephemeral = false
-        try {
-          val liftedTp = if (isLifted) tp else liftToClasses(tp)
-          val refs =
-            if (liftedTp ne tp)
-              iscope(liftedTp, isLifted = true).companionRefs
-            else
-              collectCompanions(tp)
-          val result = new OfTypeImplicits(tp, refs)(ctx)
-          if (ctx.typerState.ephemeral)
-            record("ephemeral cache miss: implicitScope")
-          else if (canCache &&
-                   ((tp eq rootTp) ||          // first type traversed is always cached
-                    !incomplete.contains(tp))) // other types are cached if they are not incomplete
-            implicitScopeCache(tp) = result
-          result
-        }
-        finally ctx.typerState.ephemeral |= savedEphemeral
+        val liftedTp = if (isLifted) tp else liftToClasses(tp)
+        val refs =
+          if (liftedTp ne tp)
+            iscope(liftedTp, isLifted = true).companionRefs
+          else
+            collectCompanions(tp)
+        val result = new OfTypeImplicits(tp, refs)(ctx)
+        if (canCache &&
+            ((tp eq rootTp) ||          // first type traversed is always cached
+             !incomplete.contains(tp))) // other types are cached if they are not incomplete
+          implicitScopeCache(tp) = result
+        result
       }
       if (canCache) implicitScopeCache.getOrElse(tp, computeIScope())
       else computeIScope()
@@ -556,7 +546,7 @@ trait Implicits { self: Typer =>
 
     /** If `formal` is of the form ClassTag[T], where `T` is a class type,
      *  synthesize a class tag for `T`.
-   	 */
+     */
     def synthesizedClassTag(formal: Type): Tree = formal.argInfos match {
       case arg :: Nil =>
         fullyDefinedType(arg, "ClassTag argument", pos) match {
@@ -564,11 +554,15 @@ trait Implicits { self: Typer =>
             val etag = inferImplicitArg(defn.ClassTagType.appliedTo(elemTp), pos)
             if (etag.tpe.isError) EmptyTree else etag.select(nme.wrap)
           case tp if hasStableErasure(tp) && !defn.isBottomClass(tp.typeSymbol) =>
-            ref(defn.ClassTagModule)
-              .select(nme.apply)
-              .appliedToType(tp)
-              .appliedTo(clsOf(erasure(tp)))
-              .withPos(pos)
+            val sym = tp.typeSymbol
+            if (sym == defn.UnitClass || sym == defn.AnyClass || sym == defn.AnyValClass)
+              ref(defn.ClassTagModule).select(sym.name.toTermName).withPos(pos)
+            else
+              ref(defn.ClassTagModule)
+                .select(nme.apply)
+                .appliedToType(tp)
+                .appliedTo(clsOf(erasure(tp)))
+                .withPos(pos)
           case tp =>
             EmptyTree
         }
@@ -601,7 +595,7 @@ trait Implicits { self: Typer =>
 
     /** If `formal` is of the form Eq[T, U], where no `Eq` instance exists for
      *  either `T` or `U`, synthesize `Eq.eqAny[T, U]` as solution.
-   	 */
+     */
     def synthesizedEq(formal: Type)(implicit ctx: Context): Tree = {
       //println(i"synth eq $formal / ${formal.argTypes}%, %")
       formal.argTypes match {
@@ -696,22 +690,67 @@ trait Implicits { self: Typer =>
         }
     }
     def location(preposition: String) = if (where.isEmpty) "" else s" $preposition $where"
+
+    /** Extract a user defined error message from a symbol `sym`
+     *  with an annotation matching the given class symbol `cls`.
+     */
+    def userDefinedMsg(sym: Symbol, cls: Symbol) = for {
+      ann <- sym.getAnnotation(cls)
+      Trees.Literal(Constant(msg: String)) <- ann.argument(0)
+    } yield msg
+
+
     arg.tpe match {
       case ambi: AmbiguousImplicits =>
-        msg(s"ambiguous implicit arguments: ${ambi.explanation}${location("of")}")(
-            s"ambiguous implicit arguments of type ${pt.show} found${location("for")}")
+        object AmbiguousImplicitMsg {
+          def unapply(search: SearchSuccess): Option[String] =
+            userDefinedMsg(search.ref.symbol, defn.ImplicitAmbiguousAnnot)
+        }
+
+        /** Construct a custom error message given an ambiguous implicit
+         *  candidate `alt` and a user defined message `raw`.
+         */
+        def userDefinedAmbiguousImplicitMsg(alt: SearchSuccess, raw: String) = {
+          val params = alt.ref.underlying match {
+            case p: PolyType => p.paramNames.map(_.toString)
+            case _           => Nil
+          }
+          def resolveTypes(targs: List[Tree])(implicit ctx: Context) =
+            targs.map(a => fullyDefinedType(a.tpe, "type argument", a.pos))
+
+          // We can extract type arguments from:
+          //   - a function call:
+          //     @implicitAmbiguous("msg A=${A}")
+          //     implicit def f[A](): String = ...
+          //     implicitly[String] // found: f[Any]()
+          //
+          //   - an eta-expanded function:
+          //     @implicitAmbiguous("msg A=${A}")
+          //     implicit def f[A](x: Int): String = ...
+          //     implicitly[Int => String] // found: x => f[Any](x)
+
+          val call = closureBody(alt.tree) // the tree itself if not a closure
+          val (_, targs, _) = decomposeCall(call)
+          val args = resolveTypes(targs)(ctx.fresh.setTyperState(alt.tstate))
+          err.userDefinedErrorString(raw, params, args)
+        }
+
+        (ambi.alt1, ambi.alt2) match {
+          case (alt @ AmbiguousImplicitMsg(msg), _) =>
+            userDefinedAmbiguousImplicitMsg(alt, msg)
+          case (_, alt @ AmbiguousImplicitMsg(msg)) =>
+            userDefinedAmbiguousImplicitMsg(alt, msg)
+          case _ =>
+            msg(s"ambiguous implicit arguments: ${ambi.explanation}${location("of")}")(
+                s"ambiguous implicit arguments of type ${pt.show} found${location("for")}")
+        }
+
       case _ =>
-        val userDefined =
-          for {
-            notFound <- pt.typeSymbol.getAnnotation(defn.ImplicitNotFoundAnnot)
-            Trees.Literal(Constant(raw: String)) <- notFound.argument(0)
-          }
-          yield {
-            err.implicitNotFoundString(
-              raw,
-              pt.typeSymbol.typeParams.map(_.name.unexpandedName.toString),
-              pt.argInfos)
-          }
+        val userDefined = userDefinedMsg(pt.typeSymbol, defn.ImplicitNotFoundAnnot).map(raw =>
+          err.userDefinedErrorString(
+            raw,
+            pt.typeSymbol.typeParams.map(_.name.unexpandedName.toString),
+            pt.argInfos))
         msg(userDefined.getOrElse(em"no implicit argument of type $pt was found${location("for")}"))()
     }
   }
@@ -779,7 +818,7 @@ trait Implicits { self: Typer =>
         case result: SearchSuccess =>
           result.tstate.commit()
           implicits.println(i"success: $result")
-          implicits.println(i"committing ${result.tstate.constraint} yielding ${ctx.typerState.constraint} ${ctx.typerState.hashesStr}")
+          implicits.println(i"committing ${result.tstate.constraint} yielding ${ctx.typerState.constraint} in ${ctx.typerState}")
           result
         case result: SearchFailure if result.isAmbiguous =>
           val deepPt = pt.deepenProto
@@ -833,64 +872,64 @@ trait Implicits { self: Typer =>
 
     val isNot = wildProto.classSymbol == defn.NotClass
 
+      //println(i"search implicits $pt / ${eligible.map(_.ref)}")
+
+    /** Try to typecheck an implicit reference */
+    def typedImplicit(cand: Candidate, contextual: Boolean)(implicit ctx: Context): SearchResult = track("typedImplicit") { trace(i"typed implicit ${cand.ref}, pt = $pt, implicitsEnabled == ${ctx.mode is ImplicitsEnabled}", implicits, show = true) {
+      val ref = cand.ref
+      var generated: Tree = tpd.ref(ref).withPos(pos.startPos)
+      val locked = ctx.typerState.ownedVars
+      if (!argument.isEmpty)
+        generated = typedUnadapted(
+          untpd.Apply(untpd.TypedSplice(generated), untpd.TypedSplice(argument) :: Nil),
+          pt, locked)
+      val generated1 = adapt(generated, pt, locked)
+      lazy val shadowing =
+        typed(untpd.Ident(cand.implicitRef.implicitName) withPos pos.toSynthetic, funProto)(
+          nestedContext().addMode(Mode.ImplicitShadowing).setExploreTyperState())
+      def refSameAs(shadowing: Tree): Boolean =
+        ref.symbol == closureBody(shadowing).symbol || {
+          shadowing match {
+            case Trees.Select(qual, nme.apply) => refSameAs(qual)
+            case Trees.Apply(fn, _) => refSameAs(fn)
+            case Trees.TypeApply(fn, _) => refSameAs(fn)
+            case _ => false
+          }
+        }
+
+      if (ctx.reporter.hasErrors) {
+        ctx.reporter.removeBufferedMessages
+        SearchFailure {
+          generated1.tpe match {
+            case _: SearchFailureType => generated1
+            case _ => generated1.withType(new MismatchedImplicit(ref, pt, argument))
+          }
+        }
+      }
+      else if (contextual && !ctx.mode.is(Mode.ImplicitShadowing) &&
+                !shadowing.tpe.isError && !refSameAs(shadowing)) {
+        implicits.println(i"SHADOWING $ref in ${ref.termSymbol.maybeOwner} is shadowed by $shadowing in ${shadowing.symbol.maybeOwner}")
+        SearchFailure(generated1.withTypeUnchecked(
+          new ShadowedImplicit(ref, methPart(shadowing).tpe, pt, argument)))
+      }
+      else
+        SearchSuccess(generated1, ref, cand.level)(ctx.typerState)
+    }}
+
+    /** Try to type-check implicit reference, after checking that this is not
+      *  a diverging search
+      */
+    def tryImplicit(cand: Candidate, contextual: Boolean): SearchResult = {
+      val history = ctx.searchHistory nest wildProto
+      if (history eq ctx.searchHistory)
+        SearchFailure(new DivergingImplicit(cand.ref, pt, argument))
+      else
+        typedImplicit(cand, contextual)(nestedContext().setNewTyperState().setSearchHistory(history))
+    }
+
     /** Search a list of eligible implicit references */
     def searchImplicits(eligible: List[Candidate], contextual: Boolean): SearchResult = {
       val constr = ctx.typerState.constraint
-
-      //println(i"search implicits $pt / ${eligible.map(_.ref)}")
-
-      /** Try to typecheck an implicit reference */
-      def typedImplicit(cand: Candidate)(implicit ctx: Context): SearchResult = track("typedImplicit") { trace(i"typed implicit ${cand.ref}, pt = $pt, implicitsEnabled == ${ctx.mode is ImplicitsEnabled}", implicits, show = true) {
-        assert(constr eq ctx.typerState.constraint)
-        val ref = cand.ref
-        var generated: Tree = tpd.ref(ref).withPos(pos.startPos)
-        if (!argument.isEmpty)
-          generated = typedUnadapted(
-            untpd.Apply(untpd.TypedSplice(generated), untpd.TypedSplice(argument) :: Nil),
-            pt)
-        val generated1 = adapt(generated, pt)
-        lazy val shadowing =
-          typed(untpd.Ident(cand.implicitRef.implicitName) withPos pos.toSynthetic, funProto)(
-            nestedContext().addMode(Mode.ImplicitShadowing).setExploreTyperState())
-        def refSameAs(shadowing: Tree): Boolean =
-          ref.symbol == closureBody(shadowing).symbol || {
-            shadowing match {
-              case Trees.Select(qual, nme.apply) => refSameAs(qual)
-              case Trees.Apply(fn, _) => refSameAs(fn)
-              case Trees.TypeApply(fn, _) => refSameAs(fn)
-              case _ => false
-            }
-          }
-
-        if (ctx.reporter.hasErrors) {
-          ctx.reporter.removeBufferedMessages
-          SearchFailure {
-            generated1.tpe match {
-              case _: SearchFailureType => generated1
-              case _ => generated1.withType(new MismatchedImplicit(ref, pt, argument))
-            }
-          }
-        }
-        else if (contextual && !ctx.mode.is(Mode.ImplicitShadowing) &&
-                 !shadowing.tpe.isError && !refSameAs(shadowing)) {
-          implicits.println(i"SHADOWING $ref in ${ref.termSymbol.maybeOwner} is shadowed by $shadowing in ${shadowing.symbol.maybeOwner}")
-          SearchFailure(generated1.withTypeUnchecked(
-            new ShadowedImplicit(ref, methPart(shadowing).tpe, pt, argument)))
-        }
-        else
-          SearchSuccess(generated1, ref, cand.level)(ctx.typerState)
-      }}
-
-      /** Try to type-check implicit reference, after checking that this is not
-       *  a diverging search
-       */
-      def tryImplicit(cand: Candidate): SearchResult = {
-        val history = ctx.searchHistory nest wildProto
-        if (history eq ctx.searchHistory)
-          SearchFailure(new DivergingImplicit(cand.ref, pt, argument))
-        else
-          typedImplicit(cand)(nestedContext().setNewTyperState().setSearchHistory(history))
-      }
 
       /** Compare previous success with reference and level to determine which one would be chosen, if
        *  an implicit starting with the reference was found.
@@ -963,7 +1002,7 @@ trait Implicits { self: Typer =>
       def rank(pending: List[Candidate], found: SearchResult, rfailures: List[SearchFailure]): SearchResult =
         pending match  {
           case cand :: remaining =>
-            negateIfNot(tryImplicit(cand)) match {
+            negateIfNot(tryImplicit(cand, contextual)) match {
               case fail: SearchFailure =>
                 if (fail.isAmbiguous)
                   if (ctx.scala2Mode) {
@@ -1078,6 +1117,15 @@ trait Implicits { self: Typer =>
     }
 
     def implicitScope(tp: Type): OfTypeImplicits = ctx.run.implicitScope(tp, ctx)
+
+    /** All available implicits, without ranking */
+    def allImplicits: Set[TermRef] = {
+      val contextuals = ctx.implicits.eligible(wildProto).map(tryImplicit(_, contextual = true))
+      val inscope = implicitScope(wildProto).eligible.map(tryImplicit(_, contextual = false))
+      (contextuals.toSet ++ inscope).collect {
+        case success: SearchSuccess => success.ref
+      }
+    }
   }
 }
 

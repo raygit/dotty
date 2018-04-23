@@ -132,14 +132,14 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
     def toTextTuple(args: List[Type]): Text =
       "(" ~ Text(args.map(argText), ", ") ~ ")"
 
-    def toTextFunction(args: List[Type], isImplicit: Boolean): Text =
+    def toTextFunction(args: List[Type], isImplicit: Boolean, isErased: Boolean): Text =
       changePrec(GlobalPrec) {
         val argStr: Text =
           if (args.length == 2 && !defn.isTupleType(args.head))
             atPrec(InfixPrec) { argText(args.head) }
           else
             toTextTuple(args.init)
-        (keywordText("implicit ") provided isImplicit) ~ argStr ~ " => " ~ argText(args.last)
+        (keywordText("erased ") provided isErased) ~ (keywordText("implicit ") provided isImplicit) ~ argStr ~ " => " ~ argText(args.last)
       }
 
     def toTextDependentFunction(appType: MethodType): Text = {
@@ -174,7 +174,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
       case AppliedType(tycon, args) =>
         val cls = tycon.typeSymbol
         if (tycon.isRepeatedParam) return toTextLocal(args.head) ~ "*"
-        if (defn.isFunctionClass(cls)) return toTextFunction(args, cls.name.isImplicitFunction)
+        if (defn.isFunctionClass(cls)) return toTextFunction(args, cls.name.isImplicitFunction, cls.name.isErasedFunction)
         if (defn.isTupleClass(cls)) return toTextTuple(args)
         if (isInfixType(tp)) return toTextInfixType(tycon, args)
       case EtaExpansion(tycon) =>
@@ -218,6 +218,8 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
         return "FunProto(" ~ argsText ~ "):" ~ toText(resultType)
       case tp: IgnoredProto =>
         return "?"
+      case tp @ PolyProto(targs, resType) =>
+        return "PolyProto(" ~ toTextGlobal(targs, ", ") ~ "): " ~ toText(resType)
       case _ =>
     }
     super.toText(tp)
@@ -226,10 +228,16 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
   protected def exprToText(tp: ExprType): Text =
     "=> " ~ toText(tp.resType)
 
+  protected def blockToText[T >: Untyped](block: Block[T]): Text =
+    blockText(block.stats :+ block.expr)
+
   protected def blockText[T >: Untyped](trees: List[Tree[T]]): Text =
     ("{" ~ toText(trees, "\n") ~ "}").close
 
-  override def toText[T >: Untyped](tree: Tree[T]): Text = controlled {
+  protected def typeApplyText[T >: Untyped](tree: TypeApply[T]): Text =
+    toTextLocal(tree.fun) ~ "[" ~ toTextGlobal(tree.args, ", ") ~ "]"
+
+  protected def toTextCore[T >: Untyped](tree: Tree[T]): Text = {
     import untpd.{modsDeco => _, _}
 
     def isLocalThis(tree: Tree) = tree.typeOpt match {
@@ -274,7 +282,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
       case _ => toTextGlobal(arg)
     }
 
-    def toTextCore(tree: Tree): Text = tree match {
+    tree match {
       case id: Trees.BackquotedIdent[_] if !homogenizedView =>
         "`" ~ toText(id.name) ~ "`"
       case id: Trees.SearchFailureIdent[_] =>
@@ -308,8 +316,8 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
           }
         else
           toTextLocal(fun) ~ "(" ~ toTextGlobal(args, ", ") ~ ")"
-      case TypeApply(fun, args) =>
-        toTextLocal(fun) ~ "[" ~ toTextGlobal(args, ", ") ~ "]"
+      case tree: TypeApply =>
+        typeApplyText(tree)
       case Literal(c) =>
         tree.typeOpt match {
           case ConstantType(tc) => withPos(toText(tc), tree.pos)
@@ -332,8 +340,8 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
         toText(name) ~ " = " ~ toText(arg)
       case Assign(lhs, rhs) =>
         changePrec(GlobalPrec) { toTextLocal(lhs) ~ " = " ~ toText(rhs) }
-      case Block(stats, expr) =>
-        blockText(stats :+ expr)
+      case block: Block =>
+        blockToText(block)
       case If(cond, thenp, elsep) =>
         changePrec(GlobalPrec) {
           keywordStr("if ") ~ toText(cond) ~ (keywordText(" then") provided !cond.isInstanceOf[Parens]) ~~ toText(thenp) ~ optText(elsep)(keywordStr(" else ") ~ _)
@@ -359,7 +367,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
       case SeqLiteral(elems, elemtpt) =>
         "[" ~ toTextGlobal(elems, ",") ~ " : " ~ toText(elemtpt) ~ "]"
       case tree @ Inlined(call, bindings, body) =>
-        (("/* inlined from " ~ toText(call) ~ "*/ ") provided !homogenizedView) ~
+        (("/* inlined from " ~ toText(call) ~ "*/ ") provided !homogenizedView && !ctx.settings.YshowNoInline.value) ~
         blockText(bindings :+ body)
       case tpt: untpd.DerivedTypeTree =>
         "<derived typetree watching " ~ summarized(toText(tpt.watched)) ~ ">"
@@ -511,6 +519,10 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
       case _ =>
         tree.fallbackToText(this)
     }
+  }
+
+  override def toText[T >: Untyped](tree: Tree[T]): Text = controlled {
+    import untpd.{modsDeco => _, _}
 
     var txt = toTextCore(tree)
 
@@ -550,7 +562,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
       if (ctx.settings.YprintPosSyms.value && tree.isDef)
         txt = (txt ~
           s"@@(${tree.symbol.name}=" ~ tree.symbol.pos.toString ~ ")").close
-   }
+    }
     if (ctx.settings.YshowTreeIds.value)
       txt = (txt ~ "#" ~ tree.uniqueId.toString).close
     tree match {
@@ -654,7 +666,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
 
     val bodyText = "{" ~~ selfText ~~ toTextGlobal(primaryConstrs ::: body, "\n") ~ "}"
 
-    prefix ~ (keywordText(" extends") provided !ofNew) ~~ parentsText ~~ bodyText
+    prefix ~ (keywordText(" extends") provided (!ofNew && parents.nonEmpty)) ~~ parentsText ~~ bodyText
   }
 
   protected def templateText(tree: TypeDef, impl: Template): Text = {
@@ -745,6 +757,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
     else if (sym.isClass && flags.is(Case)) "case class"
     else if (flags is Module) "object"
     else if (sym.isTerm && !flags.is(Param) && flags.is(Implicit)) "implicit val"
+    else if (sym.isTerm && !flags.is(Param) && flags.is(Erased)) "erased val"
     else super.keyString(sym)
   }
 

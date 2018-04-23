@@ -12,6 +12,7 @@ import core.TypeErasure.erasure
 import core.Types._
 import core.classfile.ClassfileConstants
 import ast.Trees._
+import SymUtils._
 import TypeUtils._
 import java.lang.StringBuilder
 
@@ -27,8 +28,11 @@ object GenericSignatures {
    *  @param info The type of the symbol
    *  @return The signature if it could be generated, `None` otherwise.
    */
-  def javaSig(sym0: Symbol, info: Type)(implicit ctx: Context): Option[String] =
-    javaSig0(sym0, info)(ctx.withPhase(ctx.erasurePhase))
+  def javaSig(sym0: Symbol, info: Type)(implicit ctx: Context): Option[String] = {
+    // Avoid generating a signature for local symbols.
+    if (sym0.isLocal) None
+    else javaSig0(sym0, info)(ctx.withPhase(ctx.erasurePhase))
+  }
 
   @noinline
   private final def javaSig0(sym0: Symbol, info: Type)(implicit ctx: Context): Option[String] = {
@@ -212,8 +216,8 @@ object GenericSignatures {
             else
               jsig(unboxedSeen, toplevel, primitiveOK)
           }
-          else if (tp.isPhantom)
-            jsig(defn.ErasedPhantomType)
+          else if (defn.isXXLFunctionClass(sym))
+            jsig(defn.FunctionXXLType, toplevel, primitiveOK)
           else if (sym.isClass)
             classSig
           else
@@ -239,8 +243,13 @@ object GenericSignatures {
           methodResultSig(restpe)
 
         case mtpe: MethodType =>
-          // phantom method parameters do not make it to the bytecode.
-          val params = mtpe.paramInfoss.flatten.filterNot(_.isPhantom)
+          // erased method parameters do not make it to the bytecode.
+          def effectiveParamInfoss(t: Type)(implicit ctx: Context): List[List[Type]] = t match {
+            case t: MethodType if t.isErasedMethod => effectiveParamInfoss(t.resType)
+            case t: MethodType => t.paramInfos :: effectiveParamInfoss(t.resType)
+            case _ => Nil
+          }
+          val params = effectiveParamInfoss(mtpe).flatten
           val restpe = mtpe.finalResultType
           builder.append('(')
           // TODO: Update once we support varargs
@@ -276,7 +285,7 @@ object GenericSignatures {
         case _ =>
           val etp = erasure(tp)
           if (etp eq tp) throw new UnknownSig
-          else jsig(etp)
+          else jsig(etp, toplevel, primitiveOK)
       }
     }
     val throwsArgs = sym0.annotations flatMap ThrownException.unapply
@@ -314,7 +323,7 @@ object GenericSignatures {
       val psyms = parents map (_.typeSymbol)
       if (psyms contains defn.ArrayClass) {
         // treat arrays specially
-        defn.ArrayType.appliedTo(intersectionDominator(parents.filter(_.typeSymbol == defn.ArrayClass).map(t => t.typeParams.head.paramInfo)))
+        defn.ArrayType.appliedTo(intersectionDominator(parents.filter(_.typeSymbol == defn.ArrayClass).map(t => t.argInfos.head)))
       } else {
         // implement new spec for erasure of refined types.
         def isUnshadowed(psym: Symbol) =

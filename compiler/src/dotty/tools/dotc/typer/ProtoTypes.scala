@@ -97,12 +97,36 @@ object ProtoTypes {
   abstract case class SelectionProto(name: Name, memberProto: Type, compat: Compatibility, privateOK: Boolean)
   extends CachedProxyType with ProtoType with ValueTypeOrProto {
 
+    /** Is the set of members of this type unknown? This is the case if:
+     *  1. The type has Nothing or Wildcard as a prefix or underlying type
+     *  2. The type has an uninstantiated TypeVar as a prefix or underlying type,
+     *  or as an upper bound of a prefix or underlying type.
+     */
+    private def hasUnknownMembers(tp: Type)(implicit ctx: Context): Boolean = tp match {
+      case tp: TypeVar => !tp.isInstantiated
+      case tp: WildcardType => true
+      case NoType => true
+      case tp: TypeRef =>
+        val sym = tp.symbol
+        sym == defn.NothingClass ||
+        !sym.isStatic && {
+          hasUnknownMembers(tp.prefix) || {
+            val bound = tp.info.hiBound
+            bound.isProvisional && hasUnknownMembers(bound)
+          }
+        }
+      case tp: AppliedType => hasUnknownMembers(tp.tycon) || hasUnknownMembers(tp.superType)
+      case tp: TypeProxy => hasUnknownMembers(tp.superType)
+      case _ => false
+    }
+
     override def isMatchedBy(tp1: Type)(implicit ctx: Context) = {
-      name == nme.WILDCARD || {
+      name == nme.WILDCARD || hasUnknownMembers(tp1) ||
+      {
         val mbr = if (privateOK) tp1.member(name) else tp1.nonPrivateMember(name)
         def qualifies(m: SingleDenotation) =
           memberProto.isRef(defn.UnitClass) ||
-          compat.normalizedCompatible(NamedType(tp1, name, m), memberProto)
+          tp1.isValueType && compat.normalizedCompatible(NamedType(tp1, name, m), memberProto)
             // Note: can't use `m.info` here because if `m` is a method, `m.info`
             //       loses knowledge about `m`'s default arguments.
         mbr match { // hasAltWith inlined for performance
@@ -130,9 +154,9 @@ object ProtoTypes {
 
     override def deepenProto(implicit ctx: Context) = derivedSelectionProto(name, memberProto.deepenProto, compat)
 
-    override def computeHash = {
+    override def computeHash(bs: Hashable.Binders) = {
       val delta = (if (compat eq NoViewsAllowed) 1 else 0) | (if (privateOK) 2 else 0)
-      addDelta(doHash(name, memberProto), delta)
+      addDelta(doHash(bs, name, memberProto), delta)
     }
   }
 
@@ -188,7 +212,7 @@ object ProtoTypes {
     private[this] var evalState: SimpleIdentityMap[untpd.Tree, (TyperState, Constraint)] = SimpleIdentityMap.Empty
 
     def isMatchedBy(tp: Type)(implicit ctx: Context) =
-      typer.isApplicable(tp, Nil, typedArgs, resultType)
+      typer.isApplicable(tp, Nil, unforcedTypedArgs, resultType)
 
     def derivedFunProto(args: List[untpd.Tree] = this.args, resultType: Type, typer: Typer = this.typer) =
       if ((args eq this.args) && (resultType eq this.resultType) && (typer eq this.typer)) this
@@ -216,13 +240,19 @@ object ProtoTypes {
       myTypedArg.size == args.length
     }
 
-    private def cacheTypedArg(arg: untpd.Tree, typerFn: untpd.Tree => Tree)(implicit ctx: Context): Tree = {
+    private def cacheTypedArg(arg: untpd.Tree, typerFn: untpd.Tree => Tree, force: Boolean)(implicit ctx: Context): Tree = {
       var targ = myTypedArg(arg)
       if (targ == null) {
-        targ = typerFn(arg)
-        if (!ctx.reporter.hasPending) {
-          myTypedArg = myTypedArg.updated(arg, targ)
-          evalState = evalState.updated(arg, (ctx.typerState, ctx.typerState.constraint))
+        if (!force && untpd.functionWithUnknownParamType(arg).isDefined)
+          // If force = false, assume ? rather than reporting an error.
+          // That way we don't cause a "missing parameter" error in `typerFn(arg)`
+          targ = arg.withType(WildcardType)
+        else {
+          targ = typerFn(arg)
+          if (!ctx.reporter.hasPending) {
+            myTypedArg = myTypedArg.updated(arg, targ)
+            evalState = evalState.updated(arg, (ctx.typerState, ctx.typerState.constraint))
+          }
         }
       }
       targ
@@ -230,19 +260,26 @@ object ProtoTypes {
 
     /** The typed arguments. This takes any arguments already typed using
      *  `typedArg` into account.
+     *  @param  force   if true try to typecheck arguments even if they are functions
+     *                  with unknown parameter types - this will then cause a
+     *                  "missing parameter type" error
      */
-    def typedArgs: List[Tree] = {
+    private def typedArgs(force: Boolean): List[Tree] = {
       if (myTypedArgs.size != args.length)
-        myTypedArgs = args.mapconserve(cacheTypedArg(_, typer.typed(_)))
+        myTypedArgs = args.mapconserve(cacheTypedArg(_, typer.typed(_), force))
       myTypedArgs
     }
+
+    def typedArgs: List[Tree] = typedArgs(force = true)
+    def unforcedTypedArgs: List[Tree] = typedArgs(force = false)
 
     /** Type single argument and remember the unadapted result in `myTypedArg`.
      *  used to avoid repeated typings of trees when backtracking.
      */
     def typedArg(arg: untpd.Tree, formal: Type)(implicit ctx: Context): Tree = {
-      val targ = cacheTypedArg(arg, typer.typedUnadapted(_, formal))
-      typer.adapt(targ, formal)
+      val locked = ctx.typerState.ownedVars
+      val targ = cacheTypedArg(arg, typer.typedUnadapted(_, formal, locked), force = true)
+      typer.adapt(targ, formal, locked)
     }
 
     /** The type of the argument `arg`.
@@ -326,7 +363,7 @@ object ProtoTypes {
   }
 
   class CachedViewProto(argType: Type, resultType: Type) extends ViewProto(argType, resultType) {
-    override def computeHash = doHash(argType, resultType)
+    override def computeHash(bs: Hashable.Binders) = doHash(bs, argType, resultType)
   }
 
   object ViewProto {
@@ -393,13 +430,26 @@ object ProtoTypes {
     def newTypeVars(tl: TypeLambda): List[TypeTree] =
       for (n <- (0 until tl.paramNames.length).toList)
       yield {
-        val tt = new TypeTree().withPos(owningTree.pos)
-        tt.withType(new TypeVar(tl.paramRefs(n), state, tt, ctx.owner))
+        val tt = new TypeVarBinder().withPos(owningTree.pos)
+        val tvar = new TypeVar(tl.paramRefs(n), state)
+        state.ownedVars += tvar
+        tt.withType(tvar)
       }
 
-    val added =
-      if (state.constraint contains tl) tl.newLikeThis(tl.paramNames, tl.paramInfos, tl.resultType)
+    /** Ensure that `tl` is not already in constraint, make a copy of necessary */
+    def ensureFresh(tl: TypeLambda): TypeLambda =
+      if (state.constraint contains tl) {
+      	var paramInfos = tl.paramInfos
+      	if (tl.isInstanceOf[HKLambda]) {
+      	  // HKLambdas are hash-consed, need to create an artificial difference by adding
+      	  // a LazyRef to a bound.
+          val TypeBounds(lo, hi) :: pinfos1 = tl.paramInfos
+          paramInfos = TypeBounds(lo, LazyRef(_ => hi)) :: pinfos1
+        }
+        ensureFresh(tl.newLikeThis(tl.paramNames, paramInfos, tl.resultType))
+      }
       else tl
+    val added = ensureFresh(tl)
     val tvars = if (addTypeVars) newTypeVars(added) else Nil
     ctx.typeComparer.addToConstraint(added, tvars.tpes.asInstanceOf[List[TypeVar]])
     (added, tvars)
@@ -424,7 +474,7 @@ object ProtoTypes {
    *  replaced by either wildcards (if typevarsMissContext) or TypeParamRefs.
    */
   def resultTypeApprox(mt: MethodType)(implicit ctx: Context): Type =
-    if (mt.isDependent) {
+    if (mt.isResultDependent) {
       def replacement(tp: Type) =
         if (ctx.mode.is(Mode.TypevarsMissContext)) WildcardType else newDepTypeVar(tp)
       mt.resultType.substParams(mt, mt.paramInfos.map(replacement))
@@ -453,7 +503,7 @@ object ProtoTypes {
         normalize(constrained(poly).resultType, pt)
       case mt: MethodType =>
         if (mt.isImplicitMethod) normalize(resultTypeApprox(mt), pt)
-        else if (mt.isDependent) tp
+        else if (mt.isResultDependent) tp
         else {
           val rt = normalize(mt.resultType, pt)
           pt match {
@@ -480,7 +530,7 @@ object ProtoTypes {
    */
   final def wildApprox(tp: Type, theMap: WildApproxMap, seen: Set[TypeParamRef])(implicit ctx: Context): Type = tp match {
     case tp: NamedType => // default case, inlined for speed
-      if (tp.symbol.isStatic) tp
+      if (tp.symbol.isStatic || (tp.prefix `eq` NoPrefix)) tp
       else tp.derivedSelect(wildApprox(tp.prefix, theMap, seen))
     case tp @ AppliedType(tycon, args) =>
       wildApprox(tycon, theMap, seen) match {
@@ -540,7 +590,7 @@ object ProtoTypes {
       tp.derivedViewProto(
           wildApprox(tp.argType, theMap, seen),
           wildApprox(tp.resultType, theMap, seen))
-    case  _: ThisType | _: BoundType | NoPrefix => // default case, inlined for speed
+    case  _: ThisType | _: BoundType => // default case, inlined for speed
       tp
     case _ =>
       (if (theMap != null && seen.eq(theMap.seen)) theMap else new WildApproxMap(seen))

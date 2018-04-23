@@ -19,6 +19,10 @@ import ast.untpd
 import ast.Trees._
 import collection.mutable
 
+object Mixin {
+  val name = "mixin"
+}
+
 /** This phase performs the following transformations:
  *
  *   1. (done in `traitDefs` and `transformSym`) Map every concrete trait getter
@@ -94,12 +98,12 @@ import collection.mutable
 class Mixin extends MiniPhase with SymTransformer { thisPhase =>
   import ast.tpd._
 
-  override def phaseName: String = "mixin"
+  override def phaseName: String = Mixin.name
 
   override def relaxedTypingInGroup = true
     // Because it changes number of parameters in trait initializers
 
-  override def runsAfter: Set[Class[_ <: Phase]] = Set(classOf[Erasure])
+  override def runsAfter = Set(Erasure.name)
 
   override def changesMembers = true  // the phase adds implementions of mixin accessors
 
@@ -182,7 +186,7 @@ class Mixin extends MiniPhase with SymTransformer { thisPhase =>
         if (defn.NotRuntimeClasses.contains(baseCls) || baseCls.is(NoInitsTrait)) Nil
         else call :: Nil
       case None =>
-        if (baseCls.is(NoInitsTrait) || defn.NoInitClasses.contains(baseCls)) Nil
+        if (baseCls.is(NoInitsTrait) || defn.NoInitClasses.contains(baseCls) || defn.isFunctionClass(baseCls)) Nil
         else {
           //println(i"synth super call ${baseCls.primaryConstructor}: ${baseCls.primaryConstructor.info}")
           transformFollowingDeep(superRef(baseCls.primaryConstructor).appliedToNone) :: Nil

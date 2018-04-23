@@ -161,7 +161,7 @@ object Trees {
       case _ => NoType
     }
 
-    /** The denotation referred tno by this tree.
+    /** The denotation referred to by this tree.
      *  Defined for `DenotingTree`s and `ProxyTree`s, NoDenotation for other
      *  kinds of trees
      */
@@ -573,6 +573,11 @@ object Trees {
       s"TypeTree${if (hasType) s"[$typeOpt]" else ""}"
   }
 
+  /** A type tree that defines a new type variable. Its type is always a TypeVar.
+   *  Every TypeVar is created as the type of one TypeVarBinder.
+   */
+  class TypeVarBinder[-T >: Untyped] extends TypeTree[T]
+
   /** ref.type */
   case class SingletonTypeTree[-T >: Untyped] private[ast] (ref: Tree[T])
     extends DenotingTree[T] with TypTree[T] {
@@ -766,7 +771,7 @@ object Trees {
   def flatten[T >: Untyped](trees: List[Tree[T]]): List[Tree[T]] = {
     var buf: ListBuffer[Tree[T]] = null
     var xs = trees
-    while (xs.nonEmpty) {
+    while (!xs.isEmpty) {
       xs.head match {
         case Thicket(elems) =>
           if (buf == null) {
@@ -800,7 +805,7 @@ object Trees {
     def unforced: AnyRef
     protected def force(x: AnyRef): Unit
     def forceIfLazy(implicit ctx: Context): T = unforced match {
-      case lzy: Lazy[T] =>
+      case lzy: Lazy[T @unchecked] =>
         val x = lzy.complete
         force(x)
         x
@@ -1179,6 +1184,7 @@ object Trees {
           case AppliedTypeTree(tpt, args) =>
             cpy.AppliedTypeTree(tree)(transform(tpt), transform(args))
           case LambdaTypeTree(tparams, body) =>
+            implicit val ctx = localCtx
             cpy.LambdaTypeTree(tree)(transformSub(tparams), transform(body))
           case ByNameTypeTree(result) =>
             cpy.ByNameTypeTree(tree)(transform(result))
@@ -1208,7 +1214,7 @@ object Trees {
           case Import(expr, selectors) =>
             cpy.Import(tree)(transform(expr), selectors)
           case PackageDef(pid, stats) =>
-            cpy.PackageDef(tree)(transformSub(pid), transformStats(stats))
+            cpy.PackageDef(tree)(transformSub(pid), transformStats(stats)(localCtx))
           case Annotated(arg, annot) =>
             cpy.Annotated(tree)(transform(arg), transform(annot))
           case Thicket(trees) =>
@@ -1324,7 +1330,8 @@ object Trees {
             this(this(x, arg), annot)
           case Thicket(ts) =>
             this(x, ts)
-          case _ if ctx.mode.is(Mode.Interactive) =>
+          case _ if ctx.reporter.errorsReported || ctx.mode.is(Mode.Interactive) =>
+            // In interactive mode, errors might come from previous runs.
             // In case of errors it may be that typed trees point to untyped ones.
             // The IDE can still traverse inside such trees, either in the run where errors
             // are reported, or in subsequent ones.

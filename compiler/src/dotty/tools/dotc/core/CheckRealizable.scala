@@ -30,8 +30,8 @@ object CheckRealizable {
   class NotFinal(sym: Symbol)(implicit ctx: Context)
   extends Realizability(i" refers to nonfinal $sym")
 
-  class HasProblemBounds(typ: SingleDenotation)(implicit ctx: Context)
-  extends Realizability(i" has a member $typ with possibly conflicting bounds ${typ.info.bounds.lo} <: ... <: ${typ.info.bounds.hi}")
+  class HasProblemBounds(name: Name, info: Type)(implicit ctx: Context)
+  extends Realizability(i" has a member $name with possibly conflicting bounds ${info.bounds.lo} <: ... <: ${info.bounds.hi}")
 
   class HasProblemBaseArg(typ: Type, argBounds: TypeBounds)(implicit ctx: Context)
   extends Realizability(i" has a base type $typ with possibly conflicting parameter bounds ${argBounds.lo} <: ... <: ${argBounds.hi}")
@@ -88,11 +88,20 @@ class CheckRealizable(implicit ctx: Context) {
       def isConcrete(tp: Type): Boolean = tp.dealias match {
         case tp: TypeRef => tp.symbol.isClass
         case tp: TypeProxy => isConcrete(tp.underlying)
-        case tp: AndOrType => isConcrete(tp.tp1) && isConcrete(tp.tp2)
+        case tp: AndType => isConcrete(tp.tp1) && isConcrete(tp.tp2)
+        case tp: OrType  => isConcrete(tp.tp1) && isConcrete(tp.tp2)
         case _ => false
       }
       if (!isConcrete(tp)) NotConcrete
       else boundsRealizability(tp).andAlso(memberRealizability(tp))
+  }
+
+  private def refinedNames(tp: Type): Set[Name] = tp.dealias match {
+    case tp: RefinedType => refinedNames(tp.parent) + tp.refinedName
+    case tp: AndType => refinedNames(tp.tp1) ++ refinedNames(tp.tp2)
+    case tp: OrType  => refinedNames(tp.tp1) ++ refinedNames(tp.tp2)
+    case tp: TypeProxy => refinedNames(tp.underlying)
+    case _ => Set.empty
   }
 
   /** `Realizable` if `tp` has good bounds, a `HasProblem...` instance
@@ -106,12 +115,22 @@ class CheckRealizable(implicit ctx: Context) {
    *       also lead to base types with bad bounds).
    */
   private def boundsRealizability(tp: Type) = {
-    val mbrProblems =
+
+    val memberProblems =
       for {
         mbr <- tp.nonClassTypeMembers
         if !(mbr.info.loBound <:< mbr.info.hiBound)
       }
-      yield new HasProblemBounds(mbr)
+      yield new HasProblemBounds(mbr.name, mbr.info)
+
+    val refinementProblems =
+      for {
+        name <- refinedNames(tp)
+        if (name.isTypeName)
+        mbr <- tp.member(name).alternatives
+        if !(mbr.info.loBound <:< mbr.info.hiBound)
+      }
+      yield new HasProblemBounds(name, mbr.info)
 
     def baseTypeProblems(base: Type) = base match {
       case AndType(base1, base2) =>
@@ -125,12 +144,13 @@ class CheckRealizable(implicit ctx: Context) {
     val baseProblems =
       tp.baseClasses.map(_.baseTypeOf(tp)).flatMap(baseTypeProblems)
 
-    (((Realizable: Realizability)
-      /: mbrProblems)(_ andAlso _)
+    ((((Realizable: Realizability)
+      /: memberProblems)(_ andAlso _)
+      /: refinementProblems)(_ andAlso _)
       /: baseProblems)(_ andAlso _)
   }
 
-  /** `Realizable` if all of `tp`'s non-struct fields have realizable types,
+  /** `Realizable` if all of `tp`'s non-strict fields have realizable types,
    *  a `HasProblemField` instance pointing to a bad field otherwise.
    */
   private def memberRealizability(tp: Type) = {

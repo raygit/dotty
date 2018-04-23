@@ -120,11 +120,12 @@ object ErrorReporting {
       val found1 = dropJavaMethod(found)
       val expected1 = dropJavaMethod(expected)
       if ((found1 eq found) != (expected eq expected1) && (found1 <:< expected1))
-        "\n(Note that Scala's and Java's representation of this type differs)"
-      else if (found.topType != expected.topType)
-        "\n(Note that the types are in different universes, see Phantom types)"
+        i"""
+           |(Note that Scala's and Java's representation of this type differs)"""
       else if (ctx.settings.explainTypes.value)
-        "\n" + ctx.typerState.show + "\n" + TypeComparer.explained((found <:< expected)(_))
+        i"""
+           |${ctx.typerState.constraint}
+           |${TypeComparer.explained((found <:< expected)(_))}"""
       else
         ""
     }
@@ -159,11 +160,11 @@ object ErrorReporting {
       TypeMismatch(found2, expected2, whyNoMatchStr(found, expected), postScript)
     }
 
-    /** Format `raw` implicitNotFound argument, replacing all
-     *  occurrences of `${X}` where `X` is in `paramNames` with the
+    /** Format `raw` implicitNotFound or implicitAmbiguous argument, replacing
+     *  all occurrences of `${X}` where `X` is in `paramNames` with the
      *  corresponding shown type in `args`.
      */
-    def implicitNotFoundString(raw: String, paramNames: List[String], args: List[Type]): String = {
+    def userDefinedErrorString(raw: String, paramNames: List[String], args: List[Type]): String = {
       def translate(name: String): Option[String] = {
         val idx = paramNames.indexOf(name)
         if (idx >= 0) Some(quoteReplacement(ex"${args(idx)}")) else None

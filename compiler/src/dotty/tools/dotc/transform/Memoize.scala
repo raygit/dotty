@@ -17,6 +17,10 @@ import NameOps._
 import Flags._
 import Decorators._
 
+object Memoize {
+  val name = "memoize"
+}
+
 /** Provides the implementations of all getters and setters, introducing
  *  fields to hold the value accessed by them.
  *  TODO: Make LazyVals a part of this phase?
@@ -32,10 +36,10 @@ import Decorators._
  *    <accessor> <mods> def x_=(y: T): Unit = ()
  *      --> <accessor> <mods> def x_=(y: T): Unit = x = y
  */
- class Memoize extends MiniPhase with IdentityDenotTransformer { thisPhase =>
+class Memoize extends MiniPhase with IdentityDenotTransformer { thisPhase =>
   import ast.tpd._
 
-  override def phaseName = "memoize"
+  override def phaseName = Memoize.name
 
   /* Makes sure that, after getters and constructors gen, there doesn't
    * exist non-deferred definitions that are not implemented. */
@@ -64,7 +68,7 @@ import Decorators._
    *  class that contains the concrete getter rather than the trait
    *  that defines it.
    */
-  override def runsAfter: Set[Class[_ <: Phase]] = Set(classOf[Mixin])
+  override def runsAfter = Set(Mixin.name)
 
   override def transformDefDef(tree: DefDef)(implicit ctx: Context): Tree = {
     val sym = tree.symbol
@@ -107,7 +111,6 @@ import Decorators._
       if (sym eq defn.NothingClass) Throw(Literal(Constant(null)))
       else if (sym eq defn.NullClass) Literal(Constant(null))
       else if (sym eq defn.BoxedUnitClass) ref(defn.BoxedUnit_UNIT)
-      else if (sym eq defn.ErasedPhantomClass) ref(defn.ErasedPhantom_UNIT)
       else {
         assert(false, sym + " has no erased bottom tree")
         EmptyTree
@@ -120,11 +123,8 @@ import Decorators._
       def adaptToField(tree: Tree): Tree =
         if (tree.isEmpty) tree else tree.ensureConforms(field.info.widen)
 
-      def isErasableBottomField(cls: Symbol): Boolean = {
-        // TODO: For Scala.js, return false if this field is in a js.Object unless it is an ErasedPhantomClass.
-        !field.isVolatile &&
-        ((cls eq defn.NothingClass) || (cls eq defn.NullClass) || (cls eq defn.BoxedUnitClass) || (cls eq defn.ErasedPhantomClass))
-      }
+      def isErasableBottomField(cls: Symbol): Boolean =
+        !field.isVolatile && ((cls eq defn.NothingClass) || (cls eq defn.NullClass) || (cls eq defn.BoxedUnitClass))
 
       if (sym.isGetter) {
         var rhs = tree.rhs.changeOwnerAfter(sym, field, thisPhase)

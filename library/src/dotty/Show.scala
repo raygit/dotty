@@ -16,29 +16,31 @@ object Show extends LowPrioShow {
     * any `T`, we default to `T#toString`.
     */
   implicit class ShowValue[V](val v: V) extends AnyVal {
-    def show(implicit ev: Show[V]): String =
-      ev.show(v)
+    def show(implicit ev: Show[V]): String = if (v == null) "null" else ev.show(v)
+  }
+
+  /** Adds escaping backslashes in a string so that it could be put in source code.
+    * For example, a newline character is shown as '\n' (without the quotes).
+    * Chars that don't have to be escaped are simply converted to a string.
+    * @param c the char to be escaped
+    * @return a string describing how to escape the give char in source code.
+    */
+  private def escapeChar(c: Char): String = c match {
+    // From 2.12 spec, `charEscapeSeq`:
+    // ‘\‘ (‘b‘ | ‘t‘ | ‘n‘ | ‘f‘ | ‘r‘ | ‘"‘ | ‘'‘ | ‘\‘)
+    case '\b' => "\\b"
+    case '\t' => "\\t"
+    case '\n' => "\\n"
+    case '\f' => "\\f"
+    case '\r' => "\\r"
+    case '\'' => "\\'"
+    case '\"' => "\\\""
+    case '\\' => "\\\\"
+    case c    => c.toString
   }
 
   implicit val stringShow: Show[String] = new Show[String] {
-    // From 2.12 spec, `charEscapeSeq`:
-    // ‘\‘ (‘b‘ | ‘t‘ | ‘n‘ | ‘f‘ | ‘r‘ | ‘"‘ | ‘'‘ | ‘\‘)
-    def show(str: String) = {
-      val sb = new StringBuilder
-      sb.append("\"")
-      str.foreach {
-        case '\b' => sb.append("\\b")
-        case '\t' => sb.append("\\t")
-        case '\n' => sb.append("\\n")
-        case '\f' => sb.append("\\f")
-        case '\r' => sb.append("\\r")
-        case '\'' => sb.append("\\'")
-        case '\"' => sb.append("\\\"")
-        case c => sb.append(c)
-      }
-      sb.append("\"")
-      sb.toString
-    }
+    def show(str: String) = str.flatMap(escapeChar).mkString("\"", "", "\"")
   }
 
   implicit val floatShow: Show[Float] = new Show[Float] {
@@ -46,22 +48,19 @@ object Show extends LowPrioShow {
   }
 
   implicit val charShow: Show[Char] = new Show[Char] {
-    def show(c: Char) = "'" + (c match {
-      case '\b' => "\\b"
-      case '\t' => "\\t"
-      case '\n' => "\\n"
-      case '\f' => "\\f"
-      case '\r' => "\\r"
-      case '\'' => "\\'"
-      case '\"' => "\\\""
-      case c    => c
-    }) + "'"
+    def show(c: Char) = s"'${escapeChar(c)}'"
   }
 
   implicit def showList[T](implicit st: Show[T]): Show[List[T]] = new Show[List[T]] {
     def show(xs: List[T]) =
       if (xs.isEmpty) "List()"
       else "List(" + xs.map(_.show).mkString(", ") + ")"
+  }
+
+  implicit def arrayShow[T](implicit st: Show[T]): Show[Array[T]] = new Show[Array[T]] {
+    def show(xs: Array[T]): String =
+      if (xs.isEmpty) "Array()"
+      else "Array(" + xs.map(_.show).mkString(", ") + ")"
   }
 
   implicit def showOption[T](implicit st: Show[T]): Show[Option[T]] = new Show[Option[T]] {

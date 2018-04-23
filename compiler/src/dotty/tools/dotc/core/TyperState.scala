@@ -5,15 +5,23 @@ package core
 import Types._
 import Flags._
 import Contexts._
-import util.{SimpleIdentityMap, DotClass}
+import util.{SimpleIdentityMap, SimpleIdentitySet, DotClass}
 import reporting._
 import printing.{Showable, Printer}
 import printing.Texts._
 import config.Config
 import collection.mutable
 import java.lang.ref.WeakReference
+import Decorators._
 
-class TyperState(previous: TyperState /* | Null */) extends DotClass with Showable {
+object TyperState {
+  @sharable private var nextId: Int = 0
+}
+
+class TyperState(previous: TyperState /* | Null */) {
+
+  val id = TyperState.nextId
+  TyperState.nextId += 1
 
   private[this] var myReporter =
     if (previous == null) new ConsoleReporter() else previous.reporter
@@ -42,19 +50,6 @@ class TyperState(previous: TyperState /* | Null */) extends DotClass with Showab
   private val previousConstraint =
     if (previous == null) constraint else previous.constraint
 
-  private[this] var myEphemeral: Boolean =
-    if (previous == null) false else previous.ephemeral
-
-  /** The ephemeral flag is set as a side effect if an operation accesses
-   *  the underlying type of a type variable. The reason we need this flag is
-   *  that any such operation is not referentially transparent; it might logically change
-   *  its value at the moment the type variable is instantiated. Caching code needs to
-   *  check the ephemeral flag; If the flag is set during an operation, the result
-   *  of that operation should not be cached.
-   */
-  def ephemeral = myEphemeral
-  def ephemeral_=(x: Boolean): Unit = { myEphemeral = x }
-
   private[this] var myIsCommittable = true
 
   def isCommittable = myIsCommittable
@@ -81,6 +76,11 @@ class TyperState(previous: TyperState /* | Null */) extends DotClass with Showab
   /** The uninstantiated variables */
   def uninstVars = constraint.uninstVars
 
+  /** The set of uninstantiated type variables which have this state as their owning state */
+  private[this] var myOwnedVars: TypeVars = SimpleIdentitySet.empty
+  def ownedVars = myOwnedVars
+  def ownedVars_=(vs: TypeVars): Unit = myOwnedVars = vs
+
   /** Gives for each instantiated type var that does not yet have its `inst` field
    *  set, the instance value stored in the constraint. Storing instances in constraints
    *  is done only in a temporary way for contexts that may be retracted
@@ -100,7 +100,7 @@ class TyperState(previous: TyperState /* | Null */) extends DotClass with Showab
   def uncommittedAncestor: TyperState =
     if (isCommitted) previous.uncommittedAncestor else this
 
-  private[this] var testReporter: StoreReporter = null
+  private[this] var testReporter: TestReporter = null
 
   /** Test using `op`. If current typerstate is shared, run `op` in a fresh exploration
    *  typerstate. If it is unshared, run `op` in current typerState, restoring typerState
@@ -116,15 +116,17 @@ class TyperState(previous: TyperState /* | Null */) extends DotClass with Showab
       val savedCommitted = isCommitted
       myIsCommittable = false
       myReporter = {
-        if (testReporter == null) {
-          testReporter = new StoreReporter(reporter)
+        if (testReporter == null || testReporter.inUse) {
+          testReporter = new TestReporter(reporter)
         } else {
           testReporter.reset()
         }
+        testReporter.inUse = true
         testReporter
       }
       try op(ctx)
       finally {
+        testReporter.inUse = false
         resetConstraintTo(savedConstraint)
         myReporter = savedReporter
         myIsCommittable = savedCommittable
@@ -159,7 +161,7 @@ class TyperState(previous: TyperState /* | Null */) extends DotClass with Showab
     constraint foreachTypeVar { tvar =>
       if (tvar.owningState.get eq this) tvar.owningState = new WeakReference(targetState)
     }
-    targetState.ephemeral |= ephemeral
+    targetState.ownedVars ++= ownedVars
     targetState.gc()
     reporter.flush()
     isCommitted = true
@@ -185,8 +187,18 @@ class TyperState(previous: TyperState /* | Null */) extends DotClass with Showab
       constraint = constraint.remove(poly)
   }
 
-  override def toText(printer: Printer): Text = constraint.toText(printer)
+  override def toString: String = s"TS[$id]"
 
-  def hashesStr: String =
-    if (previous == null) "" else hashCode.toString + " -> " + previous.hashesStr
+  def stateChainStr: String = s"$this${if (previous == null) "" else previous.stateChainStr}"
+}
+
+/** Temporary, reusable reporter used in TyperState#test */
+private class TestReporter(outer: Reporter) extends StoreReporter(outer) {
+  /** Is this reporter currently used in a test? */
+  var inUse = false
+
+  def reset() = {
+    assert(!inUse, s"Cannot reset reporter currently in use: $this")
+    infos = null
+  }
 }

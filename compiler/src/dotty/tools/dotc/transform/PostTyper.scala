@@ -16,6 +16,10 @@ import config.Printers.typr
 import Symbols._, TypeUtils._, SymUtils._
 import reporting.diagnostic.messages.{NotAMember, SuperCallsNotAllowedInline}
 
+object PostTyper {
+  val name = "posttyper"
+}
+
 /** A macro transform that runs immediately after typer and that performs the following functions:
  *
  *  (1) Add super accessors and protected accessors (@see SuperAccessors)
@@ -44,8 +48,6 @@ import reporting.diagnostic.messages.{NotAMember, SuperCallsNotAllowedInline}
  *  (11) Minimizes `call` fields of `Inline` nodes to just point to the toplevel
  *       class from which code was inlined.
  *
- *  (12) Converts GADT bounds into normal type bounds
- *
  *  The reason for making this a macro transform is that some functions (in particular
  *  super and protected accessors and instantiation checks) are naturally top-down and
  *  don't lend themselves to the bottom-up approach of a mini phase. The other two functions
@@ -57,7 +59,7 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
   import tpd._
 
   /** the following two members override abstract members in Transform */
-  override def phaseName: String = "posttyper"
+  override def phaseName: String = PostTyper.name
 
   override def changesMembers = true // the phase adds super accessors and synthetic methods
 
@@ -180,16 +182,18 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
     override def transform(tree: Tree)(implicit ctx: Context): Tree =
       try tree match {
         case tree: Ident if !tree.isType =>
+          checkNotErased(tree)
           handleMeta(tree.symbol)
           tree.tpe match {
             case tpe: ThisType => This(tpe.cls).withPos(tree.pos)
             case _ => tree
           }
         case tree @ Select(qual, name) =>
+          checkNotErased(tree)
           handleMeta(tree.symbol)
           if (name.isTypeName) {
             Checking.checkRealizable(qual.tpe, qual.pos.focus)
-            super.transform(tree)
+            super.transform(tree)(ctx.addMode(Mode.Type))
           }
           else
             transformSelect(tree, Nil)
@@ -231,7 +235,12 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
           //     be duplicated
           //  2. To enable correct pickling (calls can share symbols with the inlined code, which
           //     would trigger an assertion when pickling).
-          val callTrace = Ident(call.symbol.topLevelClass.typeRef).withPos(call.pos)
+          // In the case of macros we keep the call to be able to reconstruct the parameters that
+          // are passed to the macro. This same simplification is applied in ReifiedQuotes when the
+          // macro splices are evaluated.
+          val callTrace =
+            if (call.symbol.is(Macro)) call
+            else Ident(call.symbol.topLevelClass.typeRef).withPos(call.pos)
           cpy.Inlined(tree)(callTrace, transformSub(bindings), transform(expansion))
         case tree: Template =>
           withNoCheckNews(tree.parents.flatMap(newPart)) {
@@ -310,5 +319,14 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
           println(i"error while transforming $tree")
           throw ex
       }
+
+    private def checkNotErased(tree: RefTree)(implicit ctx: Context): Unit = {
+      if (tree.symbol.is(Erased) && !ctx.mode.is(Mode.Type)) {
+        val msg =
+          if (tree.symbol.is(CaseAccessor)) "First parameter list of case class may not contain `erased` parameters"
+          else i"${tree.symbol} is declared as erased, but is in fact used"
+        ctx.error(msg, tree.pos)
+      }
+    }
   }
 }

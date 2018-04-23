@@ -7,10 +7,11 @@ class ShowTests {
   import Show._
 
   @Test def showString = {
+    assertEquals(""""\\"""", "\\".show)
     assertEquals("\"\\thello world!\"", "\thello world!".show)
     assertEquals("\"\\nhello world!\"", "\nhello world!".show)
     assertEquals("\"\\rhello world!\"", "\rhello world!".show)
-    assertEquals("\"\\b\\t\\n\\f\\r\\\'\\\"\"", "\b\t\n\f\r\'\"".show)
+    assertEquals(""""\b\t\n\f\r\'\"\\"""", "\b\t\n\f\r\'\"\\".show)
   }
 
   @Test def showFloat = {
@@ -31,6 +32,7 @@ class ShowTests {
     assertEquals("'\\r'", '\r'.show)
     assertEquals("'\\''", '\''.show)
     assertEquals("'\\\"'", '\"'.show)
+    assertEquals("'\\\\'", '\\'.show)
   }
 
   @Test def showCar = {
@@ -51,6 +53,8 @@ class ShowTests {
 
   @Test def showOptions = {
     assertEquals("None", None.show)
+    val empty = Option.empty
+    assertEquals("None", empty.show)
     assertEquals("None", (None: Option[String]).show)
     assertEquals("Some(\"hello opt\")", Some("hello opt").show)
   }
@@ -63,12 +67,28 @@ class ShowTests {
   @Test def withoutShow = {
     case class Car(model: String, manufacturer: String, year: Int)
     assertEquals("Car(Mustang,Ford,1967)", Car("Mustang", "Ford", 1967).show)
-    assertEquals("Map()", Map[Nothing, Nothing]().show)
-    assertEquals("List()", List().show)
   }
 
   @Test def partialShow = {
     case object Foo
     assertEquals("Map(Foo -> \"Hello\")", Map(Foo -> "Hello").show)
+  }
+
+  @Test def showArrays = {
+    assertEquals("Array()", Array[Int]().show)
+    assertEquals("Array(1)", Array(1).show)
+    assertEquals("Array(1, 2, 3)", Array(1, 2, 3).show)
+  }
+
+  @Test def showNull = {
+    assertEquals("null", (null: String).show)
+    assertEquals("List(null)", List(null).show)
+    assertEquals("List(null)", List[String](null).show)
+  }
+
+  @Test def showNothing = {
+    val emptyMap = Map()
+    assertEquals("Map()", emptyMap.show)
+    assertEquals("List()", List().show)
   }
 }

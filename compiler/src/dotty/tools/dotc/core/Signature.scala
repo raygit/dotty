@@ -45,7 +45,7 @@ case class Signature(paramsSig: List[TypeName], resSig: TypeName) {
   final def consistentParams(that: Signature): Boolean = {
     @tailrec def loop(names1: List[TypeName], names2: List[TypeName]): Boolean =
       if (names1.isEmpty) names2.isEmpty
-      else names2.nonEmpty && consistent(names1.head, names2.head) && loop(names1.tail, names2.tail)
+      else !names2.isEmpty && consistent(names1.head, names2.head) && loop(names1.tail, names2.tail)
     loop(this.paramsSig, that.paramsSig)
   }
 
@@ -84,7 +84,7 @@ case class Signature(paramsSig: List[TypeName], resSig: TypeName) {
    *  to the parameter part of this signature.
    */
   def prepend(params: List[Type], isJava: Boolean)(implicit ctx: Context) =
-    Signature(params.collect { case p if !p.isPhantom => sigName(p, isJava) } ++ paramsSig, resSig)
+    Signature(params.map(p => sigName(p, isJava)) ++ paramsSig, resSig)
 
   /** A signature is under-defined if its paramsSig part contains at least one
    *  `tpnme.Uninstantiated`. Under-defined signatures arise when taking a signature
