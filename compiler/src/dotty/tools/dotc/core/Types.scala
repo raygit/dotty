@@ -1804,10 +1804,11 @@ object Types {
         param.derivedSingleDenotation(param, argInfo)
       }
       else {
-        assert(ctx.reporter.errorsReported,
-          i"""bad parameter reference $this at ${ctx.phase}
-            |the parameter is ${param.showLocated} but the prefix $prefix
-            |does not define any corresponding arguments.""")
+        if (!ctx.reporter.errorsReported)
+          throw new TypeError(
+            i"""bad parameter reference $this at ${ctx.phase}
+               |the parameter is ${param.showLocated} but the prefix $prefix
+               |does not define any corresponding arguments.""")
         NoDenotation
       }
     }
@@ -2177,7 +2178,11 @@ object Types {
    *  do not survive runs whereas typerefs do.
    */
   abstract case class ThisType(tref: TypeRef) extends CachedProxyType with SingletonType {
-    def cls(implicit ctx: Context): ClassSymbol = tref.stableInRunSymbol.asClass
+    def cls(implicit ctx: Context): ClassSymbol = tref.stableInRunSymbol match {
+      case cls: ClassSymbol => cls
+      case _ if ctx.mode.is(Mode.Interactive) => defn.AnyClass // was observed to happen in IDE mode
+    }
+
     override def underlying(implicit ctx: Context): Type =
       if (ctx.erasedTypes) tref
       else cls.info match {

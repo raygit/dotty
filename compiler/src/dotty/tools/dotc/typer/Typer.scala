@@ -1106,40 +1106,32 @@ class Typer extends Namer
     Throw(expr1).withPos(tree.pos)
   }
 
-  def typedQuote(tree: untpd.Quote, pt: Type)(implicit ctx: Context): Tree = track("typedQuote") {
-    val untpd.Quote(body) = tree
-    val isType = body.isType
-    val resultClass = if (isType) defn.QuotedTypeClass else defn.QuotedExprClass
-    val proto1 = pt.baseType(resultClass) match {
-      case AppliedType(_, argType :: Nil) => argType
-      case _ => WildcardType
-    }
-    val nestedCtx = ctx.fresh.setTree(tree)
-    if (isType) {
-      val body1 = typedType(body, proto1)(nestedCtx)
-      ref(defn.typeQuoteMethod).appliedToTypeTrees(body1 :: Nil)
-    }
-    else {
-      val body1 = typed(body, proto1)(nestedCtx)
-      ref(defn.quoteMethod).appliedToType(body1.tpe.widen).appliedTo(body1)
-    }
-  }
-
   def typedSeqLiteral(tree: untpd.SeqLiteral, pt: Type)(implicit ctx: Context): SeqLiteral = track("typedSeqLiteral") {
-    val proto1 = pt.elemType match {
+    val elemProto = pt.elemType match {
       case NoType => WildcardType
       case bounds: TypeBounds => WildcardType(bounds)
       case elemtp => elemtp
     }
-    val elems1 = tree.elems mapconserve (typed(_, proto1))
-    val proto2 = // the computed type of the `elemtpt` field
-      if (!tree.elemtpt.isEmpty) WildcardType
-      else if (isFullyDefined(proto1, ForceDegree.none)) proto1
-      else if (tree.elems.isEmpty && tree.isInstanceOf[Trees.JavaSeqLiteral[_]])
-        defn.ObjectType // generic empty Java varargs are of type Object[]
-      else ctx.typeComparer.lub(elems1.tpes)
-    val elemtpt1 = typed(tree.elemtpt, proto2)
-    assignType(cpy.SeqLiteral(tree)(elems1, elemtpt1), elems1, elemtpt1)
+
+    def assign(elems1: List[Tree], elemtpt1: Tree) =
+      assignType(cpy.SeqLiteral(tree)(elems1, elemtpt1), elems1, elemtpt1)
+
+    if (!tree.elemtpt.isEmpty) {
+      val elemtpt1 = typed(tree.elemtpt, elemProto)
+      val elems1 = tree.elems.mapconserve(typed(_, elemtpt1.tpe))
+      assign(elems1, elemtpt1)
+    } else {
+      val elems1 = tree.elems.mapconserve(typed(_, elemProto))
+      val elemtptType =
+        if (isFullyDefined(elemProto, ForceDegree.none))
+          elemProto
+        else if (tree.elems.isEmpty && tree.isInstanceOf[Trees.JavaSeqLiteral[_]])
+          defn.ObjectType // generic empty Java varargs are of type Object[]
+        else
+          ctx.typeComparer.lub(elems1.tpes)
+      val elemtpt1 = typed(tree.elemtpt, elemtptType)
+      assign(elems1, elemtpt1)
+    }
   }
 
   def typedInlined(tree: untpd.Inlined, pt: Type)(implicit ctx: Context): Inlined = {
@@ -1194,7 +1186,7 @@ class Typer extends Namer
     val refineCls = createSymbol(refineClsDef).asClass
     val TypeDef(_, impl: Template) = typed(refineClsDef)
     val refinements1 = impl.body
-    assert(tree.refinements.length == refinements1.length, s"${tree.refinements} != $refinements1")
+    assert(tree.refinements.hasSameLengthAs(refinements1), i"${tree.refinements}%, % > $refinements1%, %")
     val seen = mutable.Set[Symbol]()
     for (refinement <- refinements1) { // TODO: get clarity whether we want to enforce these conditions
       typr.println(s"adding refinement $refinement")
@@ -1413,7 +1405,10 @@ class Typer extends Namer
     val tparams1 = tparams mapconserve (typed(_).asInstanceOf[TypeDef])
     val vparamss1 = vparamss nestedMapconserve (typed(_).asInstanceOf[ValDef])
     vparamss1.foreach(checkNoForwardDependencies)
-    if (sym is Implicit) checkImplicitParamsNotSingletons(vparamss1)
+    if (sym is Implicit) {
+      checkImplicitParamsNotSingletons(vparamss1)
+      checkImplicitConversionDefOK(sym)
+    }
     val tpt1 = checkSimpleKinded(typedType(tpt))
 
     var rhsCtx = ctx
@@ -1794,7 +1789,6 @@ class Typer extends Namer
           case tree: untpd.Super => typedSuper(tree, pt)
           case tree: untpd.SeqLiteral => typedSeqLiteral(tree, pt)
           case tree: untpd.Inlined => typedInlined(tree, pt)
-          case tree: untpd.Quote => typedQuote(tree, pt)
           case tree: untpd.TypeTree => typedTypeTree(tree, pt)
           case tree: untpd.SingletonTypeTree => typedSingletonTypeTree(tree)
           case tree: untpd.AndTypeTree => typedAndTypeTree(tree)
@@ -2447,9 +2441,10 @@ class Typer extends Namer
         if (isFullyDefined(wtp, force = ForceDegree.all) &&
             ctx.typerState.constraint.ne(prevConstraint)) readapt(tree)
         else err.typeMismatch(tree, pt, failure)
-      if (ctx.mode.is(Mode.ImplicitsEnabled))
+      if (ctx.mode.is(Mode.ImplicitsEnabled) && tree.typeOpt.isValueType)
         inferView(tree, pt) match {
           case SearchSuccess(inferred, _, _) =>
+            checkImplicitConversionUseOK(inferred.symbol, tree.pos)
             readapt(inferred)(ctx.retractMode(Mode.ImplicitsEnabled))
           case failure: SearchFailure =>
             if (pt.isInstanceOf[ProtoType] && !failure.isAmbiguous)

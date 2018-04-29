@@ -324,16 +324,6 @@ class Definitions {
   lazy val throwMethod = enterMethod(OpsPackageClass, nme.THROWkw,
       MethodType(List(ThrowableType), NothingType))
 
-  /** Method representing a term quote */
-  lazy val quoteMethod = enterPolyMethod(OpsPackageClass, nme.QUOTE, 1,
-      pt => MethodType(pt.paramRefs(0) :: Nil, QuotedExprType.appliedTo(pt.paramRefs(0) :: Nil)),
-      useCompleter = true)
-
-  /** Method representing a type quote */
-  lazy val typeQuoteMethod = enterPolyMethod(OpsPackageClass, nme.TYPE_QUOTE, 1,
-      pt => QuotedTypeType.appliedTo(pt.paramRefs(0) :: Nil),
-      useCompleter = true)
-
   lazy val NothingClass: ClassSymbol = enterCompleteClassSymbol(
     ScalaPackageClass, tpnme.Nothing, AbstractFinal, List(AnyClass.typeRef))
   def NothingType = NothingClass.typeRef
@@ -585,8 +575,14 @@ class Definitions {
 
   lazy val PartialFunctionType: TypeRef         = ctx.requiredClassRef("scala.PartialFunction")
   def PartialFunctionClass(implicit ctx: Context) = PartialFunctionType.symbol.asClass
+    lazy val PartialFunction_isDefinedAtR = PartialFunctionClass.requiredMethodRef(nme.isDefinedAt)
+    def PartialFunction_isDefinedAt(implicit ctx: Context) = PartialFunction_isDefinedAtR.symbol
+    lazy val PartialFunction_applyOrElseR = PartialFunctionClass.requiredMethodRef(nme.applyOrElse)
+    def PartialFunction_applyOrElse(implicit ctx: Context) = PartialFunction_applyOrElseR.symbol
+
   lazy val AbstractPartialFunctionType: TypeRef = ctx.requiredClassRef("scala.runtime.AbstractPartialFunction")
   def AbstractPartialFunctionClass(implicit ctx: Context) = AbstractPartialFunctionType.symbol.asClass
+
   lazy val FunctionXXLType: TypeRef         = ctx.requiredClassRef("scala.FunctionXXL")
   def FunctionXXLClass(implicit ctx: Context) = FunctionXXLType.symbol.asClass
 
@@ -630,6 +626,11 @@ class Definitions {
   lazy val QuotedExprType = ctx.requiredClassRef("scala.quoted.Expr")
   def QuotedExprClass(implicit ctx: Context) = QuotedExprType.symbol.asClass
 
+  lazy val QuotedExprModuleType = ctx.requiredModuleRef("scala.quoted.Expr")
+  def QuotedExprModule(implicit ctx: Context) = QuotedExprModuleType.symbol
+    lazy val QuotedExpr_applyR = QuotedExprModule.requiredMethodRef(nme.apply)
+    def QuotedExpr_apply(implicit ctx: Context) = QuotedExpr_applyR.symbol
+
     lazy val QuotedExpr_spliceR = QuotedExprClass.requiredMethod(nme.UNARY_~)
     def QuotedExpr_~(implicit ctx: Context) = QuotedExpr_spliceR.symbol
     lazy val QuotedExpr_runR = QuotedExprClass.requiredMethodRef(nme.run)
@@ -644,7 +645,8 @@ class Definitions {
     lazy val QuotedType_spliceR = QuotedTypeClass.requiredType(tpnme.UNARY_~).typeRef
     def QuotedType_~ = QuotedType_spliceR.symbol
 
-  lazy val QuotedTypeModule = QuotedTypeClass.companionModule
+  lazy val QuotedTypeModuleType = ctx.requiredModuleRef("scala.quoted.Type")
+  def QuotedTypeModule(implicit ctx: Context) = QuotedTypeModuleType.symbol
     lazy val QuotedType_applyR = QuotedTypeModule.requiredMethodRef(nme.apply)
     def QuotedType_apply(implicit ctx: Context) = QuotedType_applyR.symbol
 
@@ -1183,7 +1185,7 @@ class Definitions {
 
   /** Lists core methods that don't have underlying bytecode, but are synthesized on-the-fly in every reflection universe */
   lazy val syntheticCoreMethods =
-    AnyMethods ++ ObjectMethods ++ List(String_+, throwMethod, quoteMethod, typeQuoteMethod)
+    AnyMethods ++ ObjectMethods ++ List(String_+, throwMethod)
 
   lazy val reservedScalaClassNames: Set[Name] = syntheticScalaClasses.map(_.name).toSet
 

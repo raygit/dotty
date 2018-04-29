@@ -32,7 +32,6 @@ import dotty.tools.dotc.core.quoted._
  *      val x2 = ???
  *      ...
  *      ~{ ... '{ ... x1 ... x2 ...} ... }
- *      ~{ ... /* no references to xi */ ... }
  *      ...
  *    }
  *    ```
@@ -45,7 +44,6 @@ import dotty.tools.dotc.core.quoted._
  *         val x2 = ???
  *         ...
  *         Hole(0 | x1, x2)
- *         Hole(1 | )
  *         ...
  *       ]],
  *       List(
@@ -54,8 +52,7 @@ import dotty.tools.dotc.core.quoted._
  *           val x2$1 = args(1).asInstanceOf[Expr[T]] // can be asInstanceOf[Type[T]]
  *           ...
  *           { ... '{ ... x1$1.unary_~ ... x2$1.unary_~ ...} ... }
- *         },
- *         { ... /* no references to xi */ ... } // optimized to not create lambda
+ *         }
  *       )
  *     )
  *    ```
@@ -69,12 +66,12 @@ import dotty.tools.dotc.core.quoted._
  *    ```
  *  to
  *    ```
- *    inline def foo[T1, ...](inline x1: X, ..., y1: Y, ....): Object = { (args: Seq[Any]) => {
+ *    inline def foo[T1, ...](inline x1: X, ..., y1: Y, ....): Seq[Any] => Object = { (args: Seq[Any]) => {
  *      val T1$1 = args(0).asInstanceOf[Type[T1]]
  *      ...
- *      val x1$1 = args(..).asInstanceOf[X]
+ *      val x1$1 = args(0).asInstanceOf[X]
  *      ...
- *      val y1$1 = args(..).asInstanceOf[Expr[Y]]
+ *      val y1$1 = args(1).asInstanceOf[Expr[Y]]
  *      ...
  *      { ... T1$1.unary_~ ... x ... '(y1$1.unary_~) ... }
  *    }
@@ -210,7 +207,10 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
         explicitTags.clear()
 
         // Maps type splices to type references of tags e.g., ~t -> some type T$1
-        val map: Map[Type, Type] = tagsExplicitTypeDefsPairs.map(x => (x._1, x._2.symbol.typeRef)).toMap
+        val map: Map[Type, Type] = {
+          tagsExplicitTypeDefsPairs.map(x => (x._1, x._2.symbol.typeRef)) ++
+          (itags.map(_._1) zip typeDefs.map(_.symbol.typeRef))
+        }.toMap
         val tMap = new TypeMap() {
           override def apply(tp: Type): Type = map.getOrElse(tp, mapOver(tp))
         }
@@ -245,7 +245,7 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
         l == level ||
         sym.is(Inline) && sym.owner.is(Macro) && sym.info.isValueType && l - 1 == level
       case None =>
-        true
+        level == 0
     }
 
     /** Issue a "splice outside quote" error unless we ar in the body of an inline method */
@@ -289,12 +289,12 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
         if (!isThis) sym.show
         else if (sym.is(ModuleClass)) sym.sourceModule.show
         else i"${sym.name}.this"
-      if (!isThis && sym.maybeOwner.isType)
+      if (!isThis && sym.maybeOwner.isType && !sym.is(Param))
         check(sym.owner, sym.owner.thisType, pos)
       else if (sym.exists && !sym.isStaticOwner && !levelOK(sym))
         for (errMsg <- tryHeal(tp, pos))
           ctx.error(em"""access to $symStr from wrong staging level:
-                        | - the definition is at level ${levelOf(sym)},
+                        | - the definition is at level ${levelOf.getOrElse(sym, 0)},
                         | - but the access is at level $level.$errMsg""", pos)
     }
 
@@ -313,7 +313,8 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
             }
           case tp: NamedType =>
             check(tp.symbol, tp, pos)
-            foldOver(acc, tp)
+            if (!tp.symbol.is(Param))
+              foldOver(acc, tp)
           case tp: ThisType =>
             check(tp.cls, tp, pos)
             foldOver(acc, tp)
@@ -360,7 +361,7 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
      *  core and splices as arguments.
      */
     private def quotation(body: Tree, quote: Tree)(implicit ctx: Context): Tree = {
-      val isType = quote.symbol eq defn.typeQuoteMethod
+      val isType = quote.symbol eq defn.QuotedType_apply
       if (body.symbol.isSplice) {
         // simplify `'(~x)` to `x` and then transform it
         val Select(splice, _) = body
@@ -369,8 +370,8 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
       else if (level > 0) {
         val body1 = nested(isQuote = true).transform(body)
         // Keep quotes as trees to reduce pickled size and have a Expr.show without pickled quotes
-        if (isType) ref(defn.typeQuoteMethod).appliedToType(body1.tpe.widen)
-        else ref(defn.quoteMethod).appliedToType(body1.tpe.widen).appliedTo(body1)
+        if (isType) ref(defn.QuotedType_apply).appliedToType(body1.tpe.widen)
+        else ref(defn.QuotedExpr_apply).appliedToType(body1.tpe.widen).appliedTo(body1)
       }
       else body match {
         case body: RefTree if isCaptured(body, level + 1) =>
@@ -448,8 +449,6 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
      *       val y$1 = args(1).asInstanceOf[Expr[Any]] // or .asInstanceOf[Type[Any]]
      *       { ... '{ ... x$1.unary_~ ... y$1.unary_~ ... } ... }
      *     }
-     *  or if the spliced subexpression has no captures it will be transformed to
-     *    { ... '{ ... x$1.unary_~ ... y$1.unary_~ ... } ... }
      *
      *  See: `capture`
      *
@@ -462,19 +461,6 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
      *      }
      */
     private def makeLambda(tree: Tree)(implicit ctx: Context): Tree = {
-      var treeWithoutCaptures: Tree = null
-      def transformWithCapturer(tree: Tree)(capturer: mutable.Map[Symbol, Tree] => Tree => Tree)(implicit ctx: Context): Tree = {
-        val captured = mutable.LinkedHashMap.empty[Symbol, Tree]
-        val captured2 = capturer(captured)
-        outer.enteredSyms.foreach(s => capturers.put(s, captured2))
-        if (ctx.owner.owner.is(Macro))
-          outer.enteredSyms.reverse.foreach(s => captured2(ref(s)))
-        val tree2 = transform(tree)
-        capturers --= outer.enteredSyms
-        if (captured.isEmpty)
-          treeWithoutCaptures = tree2
-        seq(captured.result().valuesIterator.toList, tree2)
-      }
       def body(arg: Tree)(implicit ctx: Context): Tree = {
         var i = 0
         transformWithCapturer(tree)(
@@ -502,10 +488,18 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
       val lambdaOwner = ctx.owner.ownersIterator.find(o => levelOf.getOrElse(o, level) == level).get
       val tpe = MethodType(defn.SeqType.appliedTo(defn.AnyType) :: Nil, tree.tpe.widen)
       val meth = ctx.newSymbol(lambdaOwner, UniqueName.fresh(nme.ANON_FUN), Synthetic | Method, tpe)
-      val closure = Closure(meth, tss => body(tss.head.head)(ctx.withOwner(meth)).changeOwner(ctx.owner, meth))
+      Closure(meth, tss => body(tss.head.head)(ctx.withOwner(meth)).changeOwner(ctx.owner, meth))
+    }
 
-      if (treeWithoutCaptures == null || ctx.owner.is(Macro)) closure
-      else treeWithoutCaptures
+    private def transformWithCapturer(tree: Tree)(capturer: mutable.Map[Symbol, Tree] => Tree => Tree)(implicit ctx: Context): Tree = {
+      val captured = mutable.LinkedHashMap.empty[Symbol, Tree]
+      val captured2 = capturer(captured)
+      outer.enteredSyms.foreach(s => capturers.put(s, captured2))
+      if (ctx.owner.owner.is(Macro))
+        outer.enteredSyms.reverse.foreach(s => captured2(ref(s)))
+      val tree2 = transform(tree)
+      capturers --= outer.enteredSyms
+      seq(captured.result().valuesIterator.toList, tree2)
     }
 
     /** Returns true if this tree will be captured by `makeLambda` */
