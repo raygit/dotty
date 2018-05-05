@@ -9,7 +9,6 @@ import Symbols._
 import Contexts._
 import Decorators.PreNamedString
 import util.NameTransformer
-import scala.collection.breakOut
 
 object StdNames {
 
@@ -487,6 +486,7 @@ object StdNames {
     val productElement: N       = "productElement"
     val productIterator: N      = "productIterator"
     val productPrefix: N        = "productPrefix"
+    val raw_ : N                = "raw"
     val readResolve: N          = "readResolve"
     val reflect : N             = "reflect"
     val reflectiveSelectable: N = "reflectiveSelectable"
@@ -497,6 +497,7 @@ object StdNames {
     val runtime: N              = "runtime"
     val runtimeClass: N         = "runtimeClass"
     val runtimeMirror: N        = "runtimeMirror"
+    val s: N                    = "s"
     val sameElements: N         = "sameElements"
     val scala_ : N              = "scala"
     val scalaShadowing : N      = "scalaShadowing"
