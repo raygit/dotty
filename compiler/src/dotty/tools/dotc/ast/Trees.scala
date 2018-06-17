@@ -213,6 +213,31 @@ object Trees {
 
     override def toText(printer: Printer) = printer.toText(this)
 
+    def sameTree(that: Tree[_]): Boolean = {
+      def isSame(x: Any, y: Any): Boolean =
+        x.asInstanceOf[AnyRef].eq(y.asInstanceOf[AnyRef]) || {
+          x match {
+            case x: Tree[_] =>
+              y match {
+                case y: Tree[_] => x.sameTree(y)
+                case _ => false
+              }
+            case x: List[_] =>
+              y match {
+                case y: List[_] => x.corresponds(y)(isSame)
+                case _ => false
+              }
+            case _ =>
+              false
+          }
+        }
+      this.getClass == that.getClass && {
+        val it1 = this.productIterator
+        val it2 = that.productIterator
+        it1.corresponds(it2)(isSame)
+      }
+    }
+
     override def hashCode(): Int = uniqueId // for debugging; was: System.identityHashCode(this)
     override def equals(that: Any) = this eq that.asInstanceOf[AnyRef]
 
@@ -337,9 +362,11 @@ object Trees {
      *  a calling chain from `viewExists`), in that case the return position is NoPosition.
      */
     def namePos =
-      if (pos.exists)
-        if (rawMods.is(Synthetic)) Position(pos.point, pos.point)
-        else Position(pos.point, pos.point + name.stripModuleClassSuffix.lastPart.length, pos.point)
+      if (pos.exists) {
+        val point = pos.point
+        if (rawMods.is(Synthetic) || name.toTermName == nme.ERROR) Position(point)
+        else Position(point, point + name.stripModuleClassSuffix.lastPart.length, point)
+      }
       else pos
   }
 
@@ -769,28 +796,26 @@ object Trees {
   def genericEmptyTree[T >: Untyped]: Thicket[T]        = theEmptyTree.asInstanceOf[Thicket[T]]
 
   def flatten[T >: Untyped](trees: List[Tree[T]]): List[Tree[T]] = {
-    var buf: ListBuffer[Tree[T]] = null
-    var xs = trees
-    while (!xs.isEmpty) {
-      xs.head match {
-        case Thicket(elems) =>
-          if (buf == null) {
-            buf = new ListBuffer
-            var ys = trees
-            while (ys ne xs) {
-              buf += ys.head
-              ys = ys.tail
+    def recur(buf: ListBuffer[Tree[T]], remaining: List[Tree[T]]): ListBuffer[Tree[T]] =
+      remaining match {
+        case Thicket(elems) :: remaining1 =>
+          var buf1 = buf
+          if (buf1 == null) {
+            buf1 = new ListBuffer[Tree[T]]
+            var scanned = trees
+            while (scanned `ne` remaining) {
+              buf1 += scanned.head
+              scanned = scanned.tail
             }
           }
-          for (elem <- elems) {
-            assert(!elem.isInstanceOf[Thicket[_]])
-            buf += elem
-          }
-        case tree =>
+          recur(recur(buf1, elems), remaining1)
+        case tree :: remaining1 =>
           if (buf != null) buf += tree
+          recur(buf, remaining1)
+        case nil =>
+          buf
       }
-      xs = xs.tail
-    }
+    val buf = recur(null, trees)
     if (buf != null) buf.toList else trees
   }
 
@@ -884,6 +909,7 @@ object Trees {
 
     @sharable val EmptyTree: Thicket = genericEmptyTree
     @sharable val EmptyValDef: ValDef = genericEmptyValDef
+    @sharable val ImplicitEmptyTree: Thicket = Thicket(Nil) // an empty tree marking an implicit closure
 
     // ----- Auxiliary creation methods ------------------
 

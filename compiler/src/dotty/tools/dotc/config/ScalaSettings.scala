@@ -47,7 +47,7 @@ class ScalaSettings extends Settings.SettingGroup {
   val fromTasty = BooleanSetting("-from-tasty", "Compile classes from tasty in classpath. The arguments are used as class names.")
 
   /** Decompiler settings */
-  val printTasty = BooleanSetting("-print-tasty", "Prints the raw tasty when decompiling.")
+  val printTasty = BooleanSetting("-print-tasty", "Prints the raw tasty.")
   val printLines = BooleanSetting("-print-lines", "Show source code line numbers.")
 
   /** Plugin-related setting */
@@ -63,7 +63,7 @@ class ScalaSettings extends Settings.SettingGroup {
   val Xhelp = BooleanSetting("-X", "Print a synopsis of advanced options.")
   val XnoForwarders = BooleanSetting("-Xno-forwarders", "Do not generate static forwarders in mirror classes.")
   val XminImplicitSearchDepth = IntSetting("-Xmin-implicit-search-depth", "Set number of levels of implicit searches undertaken before checking for divergence.", 5)
-  val xmaxInlines = IntSetting("-Xmax-inlines", "Maximal number of successive inlines", 32)
+  val XmaxInlines = IntSetting("-Xmax-inlines", "Maximal number of successive inlines", 32)
   val XmaxClassfileName = IntSetting("-Xmax-classfile-name", "Maximum filename length for generated classes", 255, 72 to 255)
   val Xmigration = VersionSetting("-Xmigration", "Warn about constructs whose behavior may have changed since version.")
   val Xprint = PhasesSetting("-Xprint", "Print out program after")
@@ -87,7 +87,6 @@ class ScalaSettings extends Settings.SettingGroup {
   val YdebugFlags = BooleanSetting("-Ydebug-flags", "Print all flags of definitions")
   val YdebugMissingRefs = BooleanSetting("-Ydebug-missing-refs", "Print a stacktrace when a required symbol is missing")
   val YdebugNames = BooleanSetting("-Ydebug-names", "Show internal representation of names")
-  val YdebugOwners = BooleanSetting("-Ydebug-owners", "Print all owners of definitions (requires -Yprint-syms)")
   val YtermConflict = ChoiceSetting("-Yresolve-term-conflict", "strategy", "Resolve term conflicts", List("package", "object", "error"), "error")
   val Ylog = PhasesSetting("-Ylog", "Log operations during")
   val YemitTasty = BooleanSetting("-Yemit-tasty", "Generate tasty in separate *.tasty file.")
@@ -113,10 +112,12 @@ class ScalaSettings extends Settings.SettingGroup {
   val YplainPrinter = BooleanSetting("-Yplain-printer", "Pretty-print using a plain printer.")
   val YprintSyms = BooleanSetting("-Yprint-syms", "when printing trees print info in symbols instead of corresponding info in trees.")
   val YprintDebug = BooleanSetting("-Yprint-debug", "when printing trees, print some extra information useful for debugging.")
+  val YprintDebugOwners = BooleanSetting("-Yprint-debug-owners", "when printing trees, print owners of definitions.")
   val YshowPrintErrors = BooleanSetting("-Yshow-print-errors", "don't suppress exceptions thrown during tree printing.")
   val YtestPickler = BooleanSetting("-Ytest-pickler", "self-test for pickling functionality; should be used with -Ystop-after:pickler")
   val YcheckReentrant = BooleanSetting("-Ycheck-reentrant", "check that compiled program does not contain vars that can be accessed from a global root.")
   val YkeepComments = BooleanSetting("-Ykeep-comments", "Keep comments when scanning source files.")
+  val YcookComments = BooleanSetting("-Ycook-comments", "Cook the comments (type check `@usecase`, etc.)")
   val YforceSbtPhases = BooleanSetting("-Yforce-sbt-phases", "Run the phases used by sbt for incremental compilation (ExtractDependencies and ExtractAPI) even if the compiler is ran outside of sbt, for debugging.")
   val YdumpSbtInc = BooleanSetting("-Ydump-sbt-inc", "For every compiled foo.scala, output the API representation and dependencies used for sbt incremental compilation in foo.inc, implies -Yforce-sbt-phases.")
   val YcheckAllPatmat = BooleanSetting("-Ycheck-all-patmat", "Check exhaustivity and redundancy of all pattern matching (used for testing the algorithm)")
@@ -145,6 +146,7 @@ class ScalaSettings extends Settings.SettingGroup {
   val Xlink = BooleanSetting("-Xlink", "Recompile library code with the application.")
   val YoptPhases = PhasesSetting("-Yopt-phases", "Restrict the optimisation phases to execute under -optimise.")
   val YoptFuel = IntSetting("-Yopt-fuel", "Maximum number of optimisations performed under -optimise.", -1)
+  val YnoDecodeStacktraces = BooleanSetting("-Yno-decode-stacktraces", "Show raw StackOverflow stacktraces, instead of decoding them into triggering operations.")
 
   /** Dottydoc specific settings */
   val siteRoot = StringSetting(

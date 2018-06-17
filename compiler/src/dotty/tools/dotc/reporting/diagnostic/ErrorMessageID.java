@@ -129,6 +129,8 @@ public enum ErrorMessageID {
     JavaSymbolIsNotAValueID,
     DoubleDeclarationID,
     MatchCaseOnlyNullWarningID,
+    ImportRenamedTwiceID,
+    TypeTestAlwaysSucceedsID,
     ;
 
     public int errorNumber() {

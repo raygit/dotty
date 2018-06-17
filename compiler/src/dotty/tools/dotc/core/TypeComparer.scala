@@ -121,7 +121,11 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
   protected def isSubType(tp1: Type, tp2: Type, a: ApproxState): Boolean = {
     val saved = approx
     this.approx = a
-    try recur(tp1, tp2) finally this.approx = saved
+    try recur(tp1, tp2)
+    catch {
+      case ex: Throwable => handleRecursive("subtype", i"$tp1 <:< $tp2", ex, weight = 2)
+    }
+    finally this.approx = saved
   }
 
   protected def isSubType(tp1: Type, tp2: Type): Boolean = isSubType(tp1, tp2, NoApprox)
@@ -161,7 +165,8 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
         try {
           pendingSubTypes += p
           firstTry
-        } finally {
+        }
+        finally {
           pendingSubTypes -= p
         }
       }
@@ -231,8 +236,8 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
         compareWild
       case tp2: LazyRef =>
         !tp2.evaluating && recur(tp1, tp2.ref)
-      case tp2: AnnotatedType =>
-        recur(tp1, tp2.tpe) // todo: refine?
+      case tp2: AnnotatedType if !tp2.isRefining =>
+        recur(tp1, tp2.parent)
       case tp2: ThisType =>
         def compareThis = {
           val cls2 = tp2.cls
@@ -340,13 +345,13 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
         // because that would cause an assertionError. Return false instead.
         // See i859.scala for an example where we hit this case.
         !tp1.evaluating && recur(tp1.ref, tp2)
-      case tp1: AnnotatedType =>
-        recur(tp1.tpe, tp2)
+      case tp1: AnnotatedType if !tp1.isRefining =>
+        recur(tp1.parent, tp2)
       case AndType(tp11, tp12) =>
         if (tp11.stripTypeVar eq tp12.stripTypeVar) recur(tp11, tp2)
         else thirdTry
       case tp1 @ OrType(tp11, tp12) =>
-        def joinOK = tp2.dealias match {
+        def joinOK = tp2.dealiasKeepRefiningAnnots match {
           case tp2: AppliedType if !tp2.tycon.typeSymbol.isClass =>
             // If we apply the default algorithm for `A[X] | B[Y] <: C[Z]` where `C` is a
             // type parameter, we will instantiate `C` to `A` and then fail when comparing
@@ -505,7 +510,7 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
         }
         compareTypeLambda
       case OrType(tp21, tp22) =>
-        val tp1a = tp1.widenDealias
+        val tp1a = tp1.widenDealiasKeepRefiningAnnots
         if (tp1a ne tp1)
           // Follow the alias; this might avoid truncating the search space in the either below
           // Note that it's safe to widen here because singleton types cannot be part of `|`.
@@ -562,6 +567,9 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
             false
         }
         compareTypeBounds
+      case tp2: AnnotatedType if tp2.isRefining =>
+        (tp1.derivesAnnotWith(tp2.annot.sameAnnotation) || defn.isBottomType(tp1)) &&
+        recur(tp1, tp2.parent)
       case ClassInfo(pre2, cls2, _, _, _) =>
         def compareClassInfo = tp1 match {
           case ClassInfo(pre1, cls1, _, _, _) =>
@@ -631,12 +639,12 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
           case EtaExpansion(tycon1) => recur(tycon1, tp2)
           case _ => tp2 match {
             case tp2: HKTypeLambda => false // this case was covered in thirdTry
-            case _ => tp2.isLambdaSub && isSubType(tp1.resultType, tp2.appliedTo(tp1.paramRefs))
+            case _ => tp2.typeParams.hasSameLengthAs(tp1.paramRefs) && isSubType(tp1.resultType, tp2.appliedTo(tp1.paramRefs))
           }
         }
         compareHKLambda
       case AndType(tp11, tp12) =>
-        val tp2a = tp2.dealias
+        val tp2a = tp2.dealiasKeepRefiningAnnots
         if (tp2a ne tp2) // Follow the alias; this might avoid truncating the search space in the either below
           return recur(tp1, tp2a)
 
@@ -656,6 +664,8 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
           case _ =>
         }
         either(recur(tp11, tp2), recur(tp12, tp2))
+      case tp1: AnnotatedType if tp1.isRefining =>
+        isNewSubType(tp1.parent)
       case JavaArrayType(elem1) =>
         def compareJavaArray = tp2 match {
           case JavaArrayType(elem2) => isSubType(elem1, elem2)
@@ -680,13 +690,13 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
       */
       def isMatchingApply(tp1: Type): Boolean = tp1 match {
         case AppliedType(tycon1, args1) =>
-          tycon1.dealias match {
+          tycon1.dealiasKeepRefiningAnnots match {
             case tycon1: TypeParamRef =>
               (tycon1 == tycon2 ||
               canConstrain(tycon1) && tryInstantiate(tycon1, tycon2)) &&
               isSubArgs(args1, args2, tp1, tparams)
             case tycon1: TypeRef =>
-              tycon2.dealias match {
+              tycon2.dealiasKeepRefiningAnnots match {
                 case tycon2: TypeRef if tycon1.symbol == tycon2.symbol =>
                   isSubType(tycon1.prefix, tycon2.prefix) &&
                   isSubArgs(args1, args2, tp1, tparams)
@@ -695,7 +705,7 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
               }
             case tycon1: TypeVar =>
               isMatchingApply(tycon1.underlying)
-            case tycon1: AnnotatedType =>
+            case tycon1: AnnotatedType if !tycon1.isRefining =>
               isMatchingApply(tycon1.underlying)
             case _ =>
               false
@@ -806,7 +816,9 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
                 fourthTry
             }
           }
-        case _: TypeVar | _: AnnotatedType =>
+        case _: TypeVar =>
+          recur(tp1, tp2.superType)
+        case tycon2: AnnotatedType if !tycon2.isRefining =>
           recur(tp1, tp2.superType)
         case tycon2: AppliedType =>
           fallback(tycon2.lowerBound)
@@ -1092,11 +1104,10 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
    *  is some combination of TypeRefs that point to classes, where the
    *  combiners are AppliedTypes, RefinedTypes, RecTypes, And/Or-Types or AnnotatedTypes.
    */
-   private def isCovered(tp: Type): Boolean = tp.dealias.stripTypeVar match {
+   private def isCovered(tp: Type): Boolean = tp.dealiasKeepRefiningAnnots.stripTypeVar match {
     case tp: TypeRef => tp.symbol.isClass && tp.symbol != NothingClass && tp.symbol != NullClass
     case tp: AppliedType => isCovered(tp.tycon)
     case tp: RefinedOrRecType => isCovered(tp.parent)
-    case tp: AnnotatedType => isCovered(tp.underlying)
     case tp: AndType => isCovered(tp.tp1) && isCovered(tp.tp2)
     case tp: OrType  => isCovered(tp.tp1) && isCovered(tp.tp2)
     case _ => false
@@ -1541,7 +1552,7 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
       }
     case tp1: TypeVar if tp1.isInstantiated =>
       tp1.underlying & tp2
-    case tp1: AnnotatedType =>
+    case tp1: AnnotatedType if !tp1.isRefining =>
       tp1.underlying & tp2
     case _ =>
       NoType
@@ -1560,7 +1571,7 @@ class TypeComparer(initctx: Context) extends DotClass with ConstraintHandling {
       ExprType(rt1 | tp2.widenExpr)
     case tp1: TypeVar if tp1.isInstantiated =>
       tp1.underlying | tp2
-    case tp1: AnnotatedType =>
+    case tp1: AnnotatedType if !tp1.isRefining =>
       tp1.underlying | tp2
     case _ =>
       NoType

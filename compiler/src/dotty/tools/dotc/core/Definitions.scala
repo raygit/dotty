@@ -573,6 +573,16 @@ class Definitions {
     lazy val StringAdd_plusR = StringAddClass.requiredMethodRef(nme.raw.PLUS)
     def StringAdd_+(implicit ctx: Context) = StringAdd_plusR.symbol
 
+  lazy val StringContextType: TypeRef       = ctx.requiredClassRef("scala.StringContext")
+  def StringContextClass(implicit ctx: Context) = StringContextType.symbol.asClass
+    lazy val StringContextSR = StringContextClass.requiredMethodRef(nme.s)
+    def StringContextS(implicit ctx: Context) = StringContextSR.symbol
+    lazy val StringContextRawR = StringContextClass.requiredMethodRef(nme.raw_)
+    def StringContextRaw(implicit ctx: Context) = StringContextRawR.symbol
+  def StringContextModule(implicit ctx: Context) = StringContextClass.companionModule
+    lazy val StringContextModule_applyR = StringContextModule.requiredMethodRef(nme.apply)
+    def StringContextModule_apply(implicit ctx: Context) = StringContextModule_applyR.symbol
+
   lazy val PartialFunctionType: TypeRef         = ctx.requiredClassRef("scala.PartialFunction")
   def PartialFunctionClass(implicit ctx: Context) = PartialFunctionType.symbol.asClass
     lazy val PartialFunction_isDefinedAtR = PartialFunctionClass.requiredMethodRef(nme.isDefinedAt)
@@ -650,9 +660,18 @@ class Definitions {
     lazy val QuotedType_applyR = QuotedTypeModule.requiredMethodRef(nme.apply)
     def QuotedType_apply(implicit ctx: Context) = QuotedType_applyR.symbol
 
+  lazy val QuotedLiftableType = ctx.requiredClassRef("scala.quoted.Liftable")
+  def QuotedLiftableClass(implicit ctx: Context) = QuotedLiftableType.symbol.asClass
+
   def Unpickler_unpickleExpr = ctx.requiredMethod("scala.runtime.quoted.Unpickler.unpickleExpr")
   def Unpickler_liftedExpr = ctx.requiredMethod("scala.runtime.quoted.Unpickler.liftedExpr")
   def Unpickler_unpickleType = ctx.requiredMethod("scala.runtime.quoted.Unpickler.unpickleType")
+
+  lazy val TastyUniverseModule = ctx.requiredModule("scala.tasty.Universe")
+  def TastyUniverseModuleClass(implicit ctx: Context) = TastyUniverseModule.symbol.asClass
+
+    lazy val TastyUniverse_compilationUniverseR = TastyUniverseModule.requiredMethod("compilationUniverse")
+    def TastyUniverse_compilationUniverse(implicit ctx: Context) = TastyUniverse_compilationUniverseR.symbol
 
   lazy val EqType = ctx.requiredClassRef("scala.Eq")
   def EqClass(implicit ctx: Context) = EqType.symbol.asClass
@@ -675,6 +694,8 @@ class Definitions {
   def ClassfileAnnotationClass(implicit ctx: Context) = ClassfileAnnotationType.symbol.asClass
   lazy val StaticAnnotationType        = ctx.requiredClassRef("scala.annotation.StaticAnnotation")
   def StaticAnnotationClass(implicit ctx: Context) = StaticAnnotationType.symbol.asClass
+  lazy val RefiningAnnotationType      = ctx.requiredClassRef("scala.annotation.RefiningAnnotation")
+  def RefiningAnnotationClass(implicit ctx: Context) = RefiningAnnotationType.symbol.asClass
 
   // Annotation classes
   lazy val AliasAnnotType = ctx.requiredClassRef("scala.annotation.internal.Alias")
@@ -842,22 +863,17 @@ class Definitions {
 
   lazy val TupleType = mkArityArray("scala.Tuple", MaxTupleArity, 2)
 
-  def FunctionClass(n: Int, isImplicit: Boolean = false, isErased: Boolean = false)(implicit ctx: Context) = {
-    if (isImplicit && isErased) {
-      require(n > 0)
+  def FunctionClass(n: Int, isImplicit: Boolean = false, isErased: Boolean = false)(implicit ctx: Context) =
+    if (isImplicit && isErased)
       ctx.requiredClass("scala.ErasedImplicitFunction" + n.toString)
-    }
-    else if (isImplicit) {
-      require(n > 0)
+    else if (isImplicit)
       ctx.requiredClass("scala.ImplicitFunction" + n.toString)
-    }
-    else if (isErased) {
-      require(n > 0)
+    else if (isErased)
       ctx.requiredClass("scala.ErasedFunction" + n.toString)
-    }
-    else if (n <= MaxImplementedFunctionArity) FunctionClassPerRun()(ctx)(n)
-    else ctx.requiredClass("scala.Function" + n.toString)
-  }
+    else if (n <= MaxImplementedFunctionArity)
+      FunctionClassPerRun()(ctx)(n)
+    else
+      ctx.requiredClass("scala.Function" + n.toString)
 
     lazy val Function0_applyR = ImplementedFunctionType(0).symbol.requiredMethodRef(nme.apply)
     def Function0_apply(implicit ctx: Context) = Function0_applyR.symbol
@@ -888,14 +904,14 @@ class Definitions {
 
   /** Is a function class.
    *   - FunctionN for N >= 0
-   *   - ImplicitFunctionN for N > 0
+   *   - ImplicitFunctionN for N >= 0
    *   - ErasedFunctionN for N > 0
    *   - ErasedImplicitFunctionN for N > 0
    */
   def isFunctionClass(cls: Symbol) = scalaClassName(cls).isFunction
 
   /** Is an implicit function class.
-   *   - ImplicitFunctionN for N > 0
+   *   - ImplicitFunctionN for N >= 0
    *   - ErasedImplicitFunctionN for N > 0
    */
   def isImplicitFunctionClass(cls: Symbol) = scalaClassName(cls).isImplicitFunction
@@ -929,7 +945,7 @@ class Definitions {
    *    - FunctionN for N > 22 becomes FunctionXXL
    *    - FunctionN for 22 > N >= 0 remains as FunctionN
    *    - ImplicitFunctionN for N > 22 becomes FunctionXXL
-   *    - ImplicitFunctionN for 22 > N >= 0 becomes FunctionN
+   *    - ImplicitFunctionN for N <= 22 becomes FunctionN
    *    - ErasedFunctionN becomes Function0
    *    - ImplicitErasedFunctionN becomes Function0
    *    - anything else becomes a NoSymbol
@@ -946,7 +962,7 @@ class Definitions {
    *    - FunctionN for N > 22 becomes FunctionXXL
    *    - FunctionN for 22 > N >= 0 remains as FunctionN
    *    - ImplicitFunctionN for N > 22 becomes FunctionXXL
-   *    - ImplicitFunctionN for 22 > N >= 0 becomes FunctionN
+   *    - ImplicitFunctionN for N <= 22 becomes FunctionN
    *    - ErasedFunctionN becomes Function0
    *    - ImplicitErasedFunctionN becomes Function0
    *    - anything else becomes a NoType
@@ -1124,7 +1140,7 @@ class Definitions {
 
 //  private val unboxedTypeRef = mutable.Map[TypeName, TypeRef]()
 //  private val javaTypeToValueTypeRef = mutable.Map[Class[_], TypeRef]()
-  private val valueTypeNamesToJavaType = mutable.Map[TypeName, Class[_]]()
+//  private val valueTypeNamesToJavaType = mutable.Map[TypeName, Class[_]]()
 
   private def valueTypeRef(name: String, boxed: TypeRef, jtype: Class[_], enc: Int, tag: Name): TypeRef = {
     val vcls = ctx.requiredClassRef(name)
@@ -1133,7 +1149,7 @@ class Definitions {
     typeTags(vcls.name) = tag
 //    unboxedTypeRef(boxed.name) = vcls
 //    javaTypeToValueTypeRef(jtype) = vcls
-    valueTypeNamesToJavaType(vcls.name) = jtype
+//    valueTypeNamesToJavaType(vcls.name) = jtype
     vcls
   }
 
@@ -1143,9 +1159,9 @@ class Definitions {
   /** The JVM tag for `tp` if it's a primitive, `java.lang.Object` otherwise. */
   def typeTag(tp: Type)(implicit ctx: Context): Name = typeTags(scalaClassName(tp))
 
-  /** The `Class[_]` of a primitive value type name */
-  def valueTypeNameToJavaType(name: TypeName)(implicit ctx: Context): Option[Class[_]] =
-    valueTypeNamesToJavaType.get(if (name.firstPart eq nme.scala_) name.lastPart.toTypeName else name)
+//  /** The `Class[_]` of a primitive value type name */
+//  def valueTypeNameToJavaType(name: TypeName)(implicit ctx: Context): Option[Class[_]] =
+//    valueTypeNamesToJavaType.get(if (name.firstPart eq nme.scala_) name.lastPart.toTypeName else name)
 
   type PrimitiveClassEnc = Int
 

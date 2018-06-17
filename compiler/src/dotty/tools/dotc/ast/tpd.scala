@@ -286,11 +286,8 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
         coord = fns.map(_.pos).reduceLeft(_ union _))
     val constr = ctx.newConstructor(cls, Synthetic, Nil, Nil).entered
     def forwarder(fn: TermSymbol, name: TermName) = {
-      var flags = Synthetic | Method | Final
-      def isOverriden(denot: SingleDenotation) = fn.info.overrides(denot.info, matchLoosely = true)
-      val isOverride = parents.exists(_.member(name).hasAltWith(isOverriden))
-      if (isOverride) flags = flags | Override
-      val fwdMeth = fn.copy(cls, name, flags).entered.asTerm
+      val fwdMeth = fn.copy(cls, name, Synthetic | Method | Final).entered.asTerm
+      if (fwdMeth.allOverriddenSymbols.exists(!_.is(Deferred))) fwdMeth.setFlag(Override)
       polyDefDef(fwdMeth, tprefs => prefss => ref(fn).appliedToTypes(tprefs).appliedToArgss(prefss))
     }
     val forwarders = (fns, methNames).zipped.map(forwarder)
@@ -839,12 +836,15 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
       tree.select(defn.Boolean_||).appliedTo(that)
 
     /** The translation of `tree = rhs`.
-     *  This is either the tree as an assignment, to a setter call.
+     *  This is either the tree as an assignment, or a setter call.
      */
-    def becomes(rhs: Tree)(implicit ctx: Context): Tree =
-      if (tree.symbol is Method) {
-        val setter = tree.symbol.setter
-        assert(setter.exists, tree.symbol.showLocated)
+    def becomes(rhs: Tree)(implicit ctx: Context): Tree = {
+      val sym = tree.symbol
+      if (sym is Method) {
+        val setter = sym.setter.orElse {
+          assert(sym.name.isSetterName && sym.info.firstParamTypes.nonEmpty)
+          sym
+        }
         val qual = tree match {
           case id: Ident => desugarIdentPrefix(id)
           case Select(qual, _) => qual
@@ -852,6 +852,17 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
         qual.select(setter).appliedTo(rhs)
       }
       else Assign(tree, rhs)
+    }
+
+    /** tree @annot
+     *
+     *  works differently for type trees and term trees
+     */
+    def annotated(annot: Tree)(implicit ctx: Context): Tree =
+      if (tree.isTerm)
+        Typed(tree, TypeTree(AnnotatedType(tree.tpe.widenIfUnstable, Annotation(annot))))
+      else
+        Annotated(tree, annot)
 
     /** A synthetic select with that will be turned into an outer path by ExplicitOuter.
      *  @param levels  How many outer levels to select
@@ -962,7 +973,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
         val alternatives = ctx.typer.resolveOverloaded(allAlts, proto)
         assert(alternatives.size == 1,
           i"${if (alternatives.isEmpty) "no" else "multiple"} overloads available for " +
-          i"$method on ${receiver.tpe.widenDealias} with targs: $targs%, %; args: $args%, % of types ${args.tpes}%, %; expectedType: $expectedType." +
+          i"$method on ${receiver.tpe.widenDealiasKeepAnnots} with targs: $targs%, %; args: $args%, % of types ${args.tpes}%, %; expectedType: $expectedType." +
           i" isAnnotConstructor = $isAnnotConstructor.\n" +
           i"all alternatives: ${allAlts.map(_.symbol.showDcl).mkString(", ")}\n" +
           i"matching alternatives: ${alternatives.map(_.symbol.showDcl).mkString(", ")}.") // this is parsed from bytecode tree. there's nothing user can do about it

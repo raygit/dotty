@@ -236,7 +236,7 @@ class TreePickler(pickler: TastyPickler) {
       withLength { pickleType(tpe.lo, richTypes); pickleType(tpe.hi, richTypes) }
     case tpe: AnnotatedType =>
       writeByte(ANNOTATEDtype)
-      withLength { pickleType(tpe.tpe, richTypes); pickleTree(tpe.annot.tree) }
+      withLength { pickleType(tpe.parent, richTypes); pickleTree(tpe.annot.tree) }
     case tpe: AndType =>
       writeByte(ANDtype)
       withLength { pickleType(tpe.tp1, richTypes); pickleType(tpe.tp2, richTypes) }
@@ -504,16 +504,7 @@ class TreePickler(pickler: TastyPickler) {
           }
         case Import(expr, selectors) =>
           writeByte(IMPORT)
-          withLength {
-            pickleTree(expr)
-            selectors foreach {
-              case Thicket((from @ Ident(_)) :: (to @ Ident(_)) :: Nil) =>
-                pickleSelector(IMPORTED, from)
-                pickleSelector(RENAMED, to)
-              case id @ Ident(_) =>
-                pickleSelector(IMPORTED, id)
-            }
-          }
+          withLength { pickleTree(expr); pickleSelectors(selectors) }
         case PackageDef(pid, stats) =>
           writeByte(PACKAGE)
           withLength { pickleType(pid.tpe); pickleStats(stats) }
@@ -569,6 +560,15 @@ class TreePickler(pickler: TastyPickler) {
       }
   }
 
+  def pickleSelectors(selectors: List[untpd.Tree])(implicit ctx: Context): Unit =
+    selectors foreach {
+      case Thicket((from @ Ident(_)) :: (to @ Ident(_)) :: Nil) =>
+        pickleSelector(IMPORTED, from)
+        pickleSelector(RENAMED, to)
+      case id @ Ident(_) =>
+        pickleSelector(IMPORTED, id)
+    }
+
   def pickleSelector(tag: Int, id: untpd.Ident)(implicit ctx: Context): Unit = {
     registerTreeAddr(id)
     writeByte(tag)
@@ -589,9 +589,11 @@ class TreePickler(pickler: TastyPickler) {
     if (flags is Case) writeByte(CASE)
     if (flags is Override) writeByte(OVERRIDE)
     if (flags is Inline) writeByte(INLINE)
+    if (flags is Transparent) writeByte(TRANSPARENT)
     if (flags is Macro) writeByte(MACRO)
     if (flags is JavaStatic) writeByte(STATIC)
     if (flags is Module) writeByte(OBJECT)
+    if (flags is Enum) writeByte(ENUM)
     if (flags is Local) writeByte(LOCAL)
     if (flags is Synthetic) writeByte(SYNTHETIC)
     if (flags is Artifact) writeByte(ARTIFACT)
@@ -599,7 +601,7 @@ class TreePickler(pickler: TastyPickler) {
     if (sym.isTerm) {
       if (flags is Implicit) writeByte(IMPLICIT)
       if (flags is Erased) writeByte(ERASED)
-      if ((flags is Lazy) && !(sym is Module)) writeByte(LAZY)
+      if (flags.is(Lazy, butNot = Module)) writeByte(LAZY)
       if (flags is AbsOverride) { writeByte(ABSTRACT); writeByte(OVERRIDE) }
       if (flags is Mutable) writeByte(MUTABLE)
       if (flags is Accessor) writeByte(FIELDaccessor)
@@ -607,6 +609,7 @@ class TreePickler(pickler: TastyPickler) {
       if (flags is DefaultParameterized) writeByte(DEFAULTparameterized)
       if (flags is Stable) writeByte(STABLE)
       if ((flags is ParamAccessor) && sym.isSetter) writeByte(PARAMsetter)
+      if (flags is Label) writeByte(LABEL)
     } else {
       if (flags is Sealed) writeByte(SEALED)
       if (flags is Abstract) writeByte(ABSTRACT)

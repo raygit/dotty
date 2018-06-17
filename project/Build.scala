@@ -33,7 +33,7 @@ object ExposedValues extends AutoPlugin {
 object Build {
 
   val baseVersion = "0.9.0"
-  val scalacVersion = "2.12.4"
+  val scalacVersion = "2.12.6"
 
   val dottyOrganization = "ch.epfl.lamp"
   val dottyGithubUrl = "https://github.com/lampepfl/dotty"
@@ -64,6 +64,9 @@ object Build {
 
   // Run tests with filter through vulpix test suite
   lazy val testCompilation = inputKey[Unit]("runs integration test with the supplied filter")
+
+  // Run TASTY tests with filter through vulpix test suite
+  lazy val testFromTasty = inputKey[Unit]("runs tasty integration test with the supplied filter")
 
   // Spawns a repl with the correct classpath
   lazy val repl = inputKey[Unit]("run the REPL with correct classpath")
@@ -398,7 +401,7 @@ object Build {
 
     dottydoc := Def.inputTaskDyn {
       val args = spaceDelimited("<arg>").parsed
-      val cp = Seq("-classpath", dottydocClasspath.value)
+      val cp = dottydocClasspath.value
 
       (runMain in Compile).toTask(s" dotty.tools.dottydoc.Main -classpath $cp " + args.mkString(" "))
     }.evaluated,
@@ -428,6 +431,15 @@ object Build {
     case NonBootstrapped => `dotty-doc`
     case Bootstrapped => `dotty-doc-bootstrapped`
     case BootstrappedOptimised => `dotty-doc-optimised`
+  }
+
+  def testOnlyFiltered(test: String, options: String) = Def.inputTaskDyn {
+    val args = spaceDelimited("<arg>").parsed
+    val cmd = s" $test -- $options" + {
+      if (args.nonEmpty) " -Ddotty.tests.filter=" + args.mkString(" ")
+      else ""
+    }
+    (testOnly in Test).toTask(cmd)
   }
 
   // Settings shared between dotty-compiler and dotty-compiler-bootstrapped
@@ -574,14 +586,8 @@ object Build {
         jarOpts ::: tuning ::: agentOptions ::: ci_build ::: path.toList
       },
 
-      testCompilation := Def.inputTaskDyn {
-        val args: Seq[String] = spaceDelimited("<arg>").parsed
-        val cmd = " dotty.tools.dotc.CompilationTests -- --exclude-categories=dotty.SlowTests" + {
-          if (args.nonEmpty) " -Ddotty.tests.filter=" + args.mkString(" ")
-          else ""
-        }
-        (testOnly in Test).toTask(cmd)
-      }.evaluated,
+      testCompilation := testOnlyFiltered("dotty.tools.dotc.CompilationTests", "--exclude-categories=dotty.SlowTests").evaluated,
+      testFromTasty := testOnlyFiltered("dotty.tools.dotc.FromTastyTests", "").evaluated,
 
       dotr := {
         val args: List[String] = spaceDelimited("<arg>").parsed.toList
@@ -658,18 +664,19 @@ object Build {
     val dottyCompiler = jars("dotty-compiler")
     val args0: List[String] = spaceDelimited("<arg>").parsed.toList
     val decompile = args0.contains("-decompile")
+    val printTasty = args0.contains("-print-tasty")
     val debugFromTasty = args0.contains("-Ythrough-tasty")
     val args = args0.filter(arg => arg != "-repl" && arg != "-decompile" &&
         arg != "-with-compiler" && arg != "-Ythrough-tasty")
 
     val main =
       if (repl) "dotty.tools.repl.Main"
-      else if (decompile) "dotty.tools.dotc.decompiler.Main"
+      else if (decompile || printTasty) "dotty.tools.dotc.decompiler.Main"
       else if (debugFromTasty) "dotty.tools.dotc.fromtasty.Debug"
       else "dotty.tools.dotc.Main"
 
     var extraClasspath = dottyLib
-    if (decompile && !args.contains("-classpath")) extraClasspath += ":."
+    if ((decompile || printTasty) && !args.contains("-classpath")) extraClasspath += ":."
     if (args0.contains("-with-compiler")) extraClasspath += s":$dottyCompiler"
 
     val fullArgs = main :: insertClasspathInArgs(args, extraClasspath)
@@ -866,7 +873,7 @@ object Build {
     settings(commonSettings).
     settings(
       version := {
-        val base = "0.2.2"
+        val base = "0.2.3"
         if (isRelease) base else base + "-SNAPSHOT"
       },
 

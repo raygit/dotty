@@ -164,8 +164,8 @@ object NamerContextOps {
   /** Find moduleClass/sourceModule in effective scope */
   private def findModuleBuddy(name: Name, scope: Scope)(implicit ctx: Context) = {
     val it = scope.lookupAll(name).filter(_ is Module)
-    assert(it.hasNext, s"no companion $name in $scope")
-    it.next()
+    if (it.hasNext) it.next()
+    else NoSymbol.assertingErrorsReported(s"no companion $name in $scope")
   }
 }
 
@@ -494,7 +494,7 @@ class Namer { typer: Typer =>
     // We don't check for clazz.superClass == JavaEnumClass, because this causes a illegal
     // cyclic reference error. See the commit message for details.
     //  if (ctx.compilationUnit.isJava) ctx.owner.companionClass.is(Enum) else ctx.owner.is(Enum)
-    vd.mods.is(allOf(Enum,  Stable, JavaStatic, JavaDefined)) // && ownerHasEnumFlag
+    vd.mods.is(JavaEnumValue) // && ownerHasEnumFlag
   }
 
   /** Add java enum constants */
@@ -821,12 +821,12 @@ class Namer { typer: Typer =>
       else completeInCreationContext(denot)
     }
 
-    private def addInlineInfo(denot: SymDenotation) = original match {
-      case original: untpd.DefDef if denot.isInlineMethod =>
+    private def addInlineInfo(sym: Symbol) = original match {
+      case original: untpd.DefDef if sym.isInlineableMethod =>
         Inliner.registerInlineInfo(
-            denot,
+            sym,
             implicit ctx => typedAheadExpr(original).asInstanceOf[tpd.DefDef].rhs
-          )(localContext(denot.symbol))
+          )(localContext(sym))
       case _ =>
     }
 
@@ -839,7 +839,7 @@ class Namer { typer: Typer =>
         case original: MemberDef => addAnnotations(sym, original)
         case _ =>
       }
-      addInlineInfo(denot)
+      addInlineInfo(sym)
       denot.info = typeSig(sym)
       Checking.checkWellFormed(sym)
       denot.info = avoidPrivateLeaks(sym, sym.pos)
@@ -918,8 +918,7 @@ class Namer { typer: Typer =>
                 fullyDefinedType(typedAheadExpr(parent).tpe, "class parent", parent.pos)
               }
             case _ =>
-              assert(ctx.reporter.errorsReported)
-              UnspecifiedErrorType
+              UnspecifiedErrorType.assertingErrorsReported
           }
         }
 
@@ -1033,8 +1032,9 @@ class Namer { typer: Typer =>
    */
   def moduleValSig(sym: Symbol)(implicit ctx: Context): Type = {
     val clsName = sym.name.moduleClassName
-    val cls = ctx.denotNamed(clsName) suchThat (_ is ModuleClass)
-    ctx.owner.thisType select (clsName, cls)
+    val cls = ctx.denotNamed(clsName).suchThat(_ is ModuleClass)
+      .orElse(ctx.newStubSymbol(ctx.owner, clsName).assertingErrorsReported)
+    ctx.owner.thisType.select(clsName, cls)
   }
 
   /** The type signature of a ValDef or DefDef
@@ -1113,7 +1113,7 @@ class Namer { typer: Typer =>
 
       // println(s"final inherited for $sym: ${inherited.toString}") !!!
       // println(s"owner = ${sym.owner}, decls = ${sym.owner.info.decls.show}")
-      def isInline = sym.is(FinalOrInline, butNot = Method | Mutable)
+      def isInline = sym.is(FinalOrInlineOrTransparent, butNot = Method | Mutable)
 
       // Widen rhs type and eliminate `|' but keep ConstantTypes if
       // definition is inline (i.e. final in Scala2) and keep module singleton types

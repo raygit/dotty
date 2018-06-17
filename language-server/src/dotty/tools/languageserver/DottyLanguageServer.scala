@@ -257,9 +257,12 @@ class DottyLanguageServer extends LanguageServer
         if (enclTree.isInstanceOf[MemberDef])
           (driver.allTreesContaining(sym.name.sourceModuleName.toString),
            Include.overriding | Include.overridden)
-        else
-          (SourceTree.fromSymbol(sym.topLevelClass.asClass).toList,
-           Include.overriding)
+        else sym.topLevelClass match {
+          case cls: ClassSymbol =>
+            (SourceTree.fromSymbol(cls).toList, Include.overriding)
+          case _ =>
+            (Nil, Include.overriding)
+        }
       val defs = Interactive.namedTrees(trees, include, sym)
       defs.map(d => location(d.namePos)).asJava
     }
@@ -325,7 +328,9 @@ class DottyLanguageServer extends LanguageServer
     if (sym == NoSymbol) Nil.asJava
     else {
       val refs = Interactive.namedTrees(uriTrees, Include.references | Include.overriding, sym)
-      refs.map(ref => new DocumentHighlight(range(ref.namePos), DocumentHighlightKind.Read)).asJava
+      ( for (ref <- refs if ref.namePos.exists)
+        yield new DocumentHighlight(range(ref.namePos), DocumentHighlightKind.Read)
+      ).asJava
     }
   }
 

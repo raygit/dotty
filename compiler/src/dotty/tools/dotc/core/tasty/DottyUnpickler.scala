@@ -46,6 +46,12 @@ class DottyUnpickler(bytes: Array[Byte]) extends ClassfileParser.Embedded with t
   def enter(roots: Set[SymDenotation])(implicit ctx: Context): Unit =
     treeUnpickler.enterTopLevel(roots)
 
+  def unpickleExpr()(implicit ctx: Context): Tree =
+    treeUnpickler.unpickleExpr()
+
+  def unpickleTypeTree()(implicit ctx: Context): Tree =
+    treeUnpickler.unpickleTypeTree()
+
   protected def treeSectionUnpickler(posUnpicklerOpt: Option[PositionUnpickler]): TreeSectionUnpickler = {
     new TreeSectionUnpickler(posUnpicklerOpt)
   }

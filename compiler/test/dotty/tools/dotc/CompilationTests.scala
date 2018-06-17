@@ -187,6 +187,7 @@ class CompilationTests extends ParallelTesting {
     compileFile("tests/neg-custom-args/noimports.scala", defaultOptions.and("-Yno-imports")) +
     compileFile("tests/neg-custom-args/noimports2.scala", defaultOptions.and("-Yno-imports")) +
     compileFile("tests/neg-custom-args/i3882.scala", allowDeepSubtypes) +
+    compileFile("tests/neg-custom-args/i4372.scala", allowDeepSubtypes) +
     compileFile("tests/neg-custom-args/i1754.scala", allowDeepSubtypes) +
     compileFilesInDir("tests/neg-custom-args/isInstanceOf", allowDeepSubtypes and "-Xfatal-warnings") +
     compileFile("tests/neg-custom-args/i3627.scala", allowDeepSubtypes)
@@ -198,7 +199,8 @@ class CompilationTests extends ParallelTesting {
     implicit val testGroup: TestGroup = TestGroup("runAll")
     compileFilesInDir("tests/run", defaultOptions) +
     compileFilesInDir("tests/run-no-optimise", defaultOptions) +
-    compileFilesInDir("tests/run-with-compiler", defaultRunWithCompilerOptions)
+    compileFilesInDir("tests/run-with-compiler", defaultRunWithCompilerOptions) +
+    compileFile("tests/run-with-compiler-custom-args/staged-streams_1.scala", defaultRunWithCompilerOptions without "-Yno-deep-subtypes")
   }.checkRuns()
 
   // Generic java signatures tests ---------------------------------------------

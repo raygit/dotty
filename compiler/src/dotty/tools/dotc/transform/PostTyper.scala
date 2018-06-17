@@ -2,19 +2,14 @@ package dotty.tools.dotc
 package transform
 
 import dotty.tools.dotc.ast.{Trees, tpd, untpd}
-import scala.collection.{ mutable, immutable }
-import ValueClasses._
-import scala.annotation.tailrec
+import scala.collection.mutable
 import core._
-import typer.ErrorReporting._
 import typer.Checking
-import Types._, Contexts._, Constants._, Names._, NameOps._, Flags._, DenotTransformers._
-import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._, Scopes._, Denotations._
-import util.Positions._
+import Types._, Contexts._, Names._, Flags._, DenotTransformers._
+import SymDenotations._, StdNames._, Annotations._, Trees._, Scopes._
 import Decorators._
-import config.Printers.typr
-import Symbols._, TypeUtils._, SymUtils._
-import reporting.diagnostic.messages.{NotAMember, SuperCallsNotAllowedInline}
+import Symbols._, SymUtils._
+import reporting.diagnostic.messages.{ImportRenamedTwice, NotAMember, SuperCallsNotAllowedInline}
 
 object PostTyper {
   val name = "posttyper"
@@ -170,7 +165,7 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
 
       def markAsMacro(c: Context): Unit =
         if (c.owner eq c.outer.owner) markAsMacro(c.outer)
-        else if (c.owner.isInlineMethod) c.owner.setFlag(Macro)
+        else if (c.owner.isInlineableMethod) c.owner.setFlag(Macro)
         else if (!c.outer.owner.is(Package)) markAsMacro(c.outer)
 
       if (sym.isSplice || sym.isQuote) {
@@ -197,10 +192,6 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
           }
           else
             transformSelect(tree, Nil)
-        case tree: Super =>
-          if (ctx.owner.enclosingMethod.isInlineMethod)
-            ctx.error(SuperCallsNotAllowedInline(ctx.owner), tree.pos)
-          super.transform(tree)
         case tree: Apply =>
           methPart(tree) match {
             case Select(nu: New, nme.CONSTRUCTOR) if isCheckable(nu) =>
@@ -213,17 +204,18 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
           }
         case tree: TypeApply =>
           val tree1 @ TypeApply(fn, args) = normalizeTypeArgs(tree)
-          Checking.checkBounds(args, fn.tpe.widen.asInstanceOf[PolyType])
+          if (fn.symbol != defn.ChildAnnot.primaryConstructor) {
+            // Make an exception for ChildAnnot, which should really have AnyKind bounds
+            Checking.checkBounds(args, fn.tpe.widen.asInstanceOf[PolyType])
+          }
           fn match {
             case sel: Select =>
               val args1 = transform(args)
               val sel1 = transformSelect(sel, args1)
-              if (superAcc.isProtectedAccessor(sel1)) sel1 else cpy.TypeApply(tree1)(sel1, args1)
+              cpy.TypeApply(tree1)(sel1, args1)
             case _ =>
               super.transform(tree1)
           }
-        case tree @ Assign(sel: Select, _) =>
-          super.transform(superAcc.transformAssign(tree))
         case Inlined(call, bindings, expansion) =>
           // Leave only a call trace consisting of
           //  - a reference to the top-level class from which the call was inlined,
@@ -285,6 +277,11 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
               case tpe => tpe
             }
           )
+        case tree: AndTypeTree =>
+          // Ideally, this should be done by Typer, but we run into cyclic references
+          // when trying to typecheck self types which are intersections.
+          Checking.checkNonCyclicInherited(tree.tpe, tree.left.tpe :: tree.right.tpe :: Nil, EmptyScope, tree.pos)
+          super.transform(tree)
         case Import(expr, selectors) =>
           val exprTpe = expr.tpe
           val seen = mutable.Set.empty[Name]
@@ -293,7 +290,7 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
             if (name != nme.WILDCARD && !exprTpe.member(name).exists && !exprTpe.member(name.toTypeName).exists)
               ctx.error(NotAMember(exprTpe, name, "value"), ident.pos)
             if (seen(ident.name))
-              ctx.error(s"${ident.show} is renamed twice", ident.pos)
+              ctx.error(ImportRenamedTwice(ident), ident.pos)
             seen += ident.name
           }
           selectors.foreach {

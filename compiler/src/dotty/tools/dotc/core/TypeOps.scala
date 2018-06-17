@@ -140,7 +140,7 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
         val accu1 = if (accu exists (_ derivesFrom c)) accu else c :: accu
         if (cs == c.baseClasses) accu1 else dominators(rest, accu1)
       case Nil => // this case can happen because after erasure we do not have a top class anymore
-        assert(ctx.erasedTypes)
+        assert(ctx.erasedTypes || ctx.reporter.errorsReported)
         defn.ObjectClass :: Nil
     }
 
@@ -326,10 +326,4 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
 
 object TypeOps {
   @sharable var track = false // !!!DEBUG
-
-  /** When a property with this key is set in a context, it limits the number
-   *  of recursive member searches. If the limit is reached, findMember returns
-   *  NoDenotation.
-   */
-  val findMemberLimit = new Property.Key[Unit]
 }

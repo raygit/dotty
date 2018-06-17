@@ -30,7 +30,6 @@ import ExplicitOuter._
 import core.Mode
 import reporting.trace
 
-
 class Erasure extends Phase with DenotTransformer {
 
   override def phaseName: String = Erasure.name
