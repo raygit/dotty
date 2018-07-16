@@ -48,13 +48,16 @@ object Inliner {
       def accessorNameKind = InlineAccessorName
 
       /** A definition needs an accessor if it is private, protected, or qualified private
-        *  and it is not part of the tree that gets inlined. The latter test is implemented
-        *  by excluding all symbols properly contained in the inlined method.
-        */
+       *  and it is not part of the tree that gets inlined. The latter test is implemented
+       *  by excluding all symbols properly contained in the inlined method.
+       *
+       *  Constant vals don't need accessors since they are inlined in FirstTransform.
+       */
       def needsAccessor(sym: Symbol)(implicit ctx: Context) =
         sym.isTerm &&
         (sym.is(AccessFlags) || sym.privateWithin.exists) &&
-        !sym.isContainedIn(inlineSym)
+        !sym.isContainedIn(inlineSym) &&
+        !(sym.isStable && sym.info.widenTermRefExpr.isInstanceOf[ConstantType])
 
       def preTransform(tree: Tree)(implicit ctx: Context): Tree
 
@@ -81,11 +84,11 @@ object Inliner {
             ctx.error("Implementation restriction: cannot use private constructors in inline methods", tree.pos)
             tree // TODO: create a proper accessor for the private constructor
           }
-          else if (AccessProxies.hostForAccessorOf(tree.symbol).exists) useAccessor(tree)
-          else tree
+          else useAccessor(tree)
         case _ =>
           tree
       }
+      override def ifNoHost(reference: RefTree)(implicit ctx: Context): Tree = reference
     }
 
     /** Fallback approach if the direct approach does not work: Place the accessor method
@@ -124,7 +127,7 @@ object Inliner {
         if needsAccessor(tree.symbol) && tree.isTerm && !tree.symbol.isConstructor =>
           val (refPart, targs, argss) = decomposeCall(tree)
           val qual = qualifier(refPart)
-          inlining.println(i"adding receiver passing inline accessor for $tree -> (${qual.tpe}, $refPart: ${refPart.getClass}, [$targs%, %], ($argss%, %))")
+          inlining.println(i"adding receiver passing inline accessor for $tree/$refPart -> (${qual.tpe}, $refPart: ${refPart.getClass}, [$targs%, %], ($argss%, %))")
 
           // Need to dealias in order to cagtch all possible references to abstracted over types in
           // substitutions
@@ -142,7 +145,7 @@ object Inliner {
           def addQualType(tp: Type): Type = tp match {
             case tp: PolyType => tp.derivedLambdaType(tp.paramNames, tp.paramInfos, addQualType(tp.resultType))
             case tp: ExprType => addQualType(tp.resultType)
-            case tp => MethodType(qualType :: Nil, tp)
+            case tp => MethodType(qualType.simplified :: Nil, tp)
           }
 
           // Abstract accessed type over local refs
@@ -229,7 +232,7 @@ object Inliner {
   }
 
   /** `sym` has an inline method with a known body to inline (note: definitions coming
-   *  from Scala2x class files might be `@inline`, but still lack that body.
+   *  from Scala2x class files might be `@forceInline`, but still lack that body.
    */
   def hasBodyToInline(sym: SymDenotation)(implicit ctx: Context): Boolean =
     sym.isInlinedMethod && sym.hasAnnotation(defn.BodyAnnot) // TODO: Open this up for transparent methods as well
@@ -240,7 +243,7 @@ object Inliner {
   def bodyToInline(sym: SymDenotation)(implicit ctx: Context): Tree =
     sym.unforcedAnnotation(defn.BodyAnnot).get.tree
 
-  /** Try to inline a call to a `@inline` method. Fail with error if the maximal
+  /** Try to inline a call to a `inline` method. Fail with error if the maximal
    *  inline depth is exceeded.
    *
    *  @param tree   The call to inline
@@ -281,7 +284,7 @@ object Inliner {
 
 /** Produces an inlined version of `call` via its `inlined` method.
  *
- *  @param  call         the original call to a `@inline` method
+ *  @param  call         the original call to an `inline` method
  *  @param  rhsToInline  the body of the inline method that replaces the call.
  */
 class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
@@ -542,9 +545,10 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
 
     override def ensureAccessible(tpe: Type, superAccess: Boolean, pos: Position)(implicit ctx: Context): Type = {
       tpe match {
-        case tpe @ TypeRef(pre, _) if !tpe.symbol.isAccessibleFrom(pre, superAccess) =>
+        case tpe: NamedType if !tpe.symbol.isAccessibleFrom(tpe.prefix, superAccess) =>
           tpe.info match {
             case TypeAlias(alias) => return ensureAccessible(alias, superAccess, pos)
+            case info: ConstantType if tpe.symbol.isStable => return info
             case _ =>
           }
         case _ =>

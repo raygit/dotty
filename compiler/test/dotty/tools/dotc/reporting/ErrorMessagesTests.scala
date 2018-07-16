@@ -163,7 +163,7 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       """
         |object Scope {
         |  abstract class Concept
-        |  new Concept()
+        |  val x = new Concept()
         |}
       """.stripMargin
     }
@@ -181,7 +181,7 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       """
         |object Scope {
         |  trait Concept
-        |  new Concept()
+        |  val x = new Concept()
         |}
       """.stripMargin
     }
@@ -508,7 +508,7 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       """class Base
         |class RequiresBase { self: Base => }
         |object Scope {
-        |  new RequiresBase
+        |  val x = new RequiresBase
         |}
         |""".stripMargin
     }
@@ -935,7 +935,7 @@ class ErrorMessagesTests extends ErrorMessagesTest {
   @Test def noReturnInInline =
     checkMessagesAfter(FrontEnd.name) {
       """class BadFunction {
-        |  @inline def usesReturn: Int = { return 42 }
+        |  inline def usesReturn: Int = { return 42 }
         |}
       """.stripMargin
     }.expect { (ictx, messages) =>

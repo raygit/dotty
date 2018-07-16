@@ -36,10 +36,11 @@ class FromTastyTests extends ParallelTesting {
 
         // MatchError in SymDenotation.sourceModule on a ThisType
         "t3612.scala",
+
+        // Fails on MacOS
+        "annot-bootstrap.scala",
       ),
       recompilationBlacklist = Set(
-        "simpleCaseObject",
-        "annot-bootstrap.scala",
       )
     ).checkCompile()
   }

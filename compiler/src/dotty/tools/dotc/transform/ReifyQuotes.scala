@@ -387,7 +387,7 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
           if (isStage0Value(body.symbol)) {
             // Optimization: avoid the full conversion when capturing inlined `x`
             // in '{ x } to '{ x$1.toExpr.unary_~ } and go directly to `x$1.toExpr`
-            liftValue(capturers(body.symbol)(body))
+            liftInlineParamValue(capturers(body.symbol)(body))
           } else {
             // Optimization: avoid the full conversion when capturing `x`
             // in '{ x } to '{ x$1.unary_~ } and go directly to `x$1`
@@ -516,9 +516,9 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
       outer.enteredSyms.foreach(registerCapturer)
 
       if (ctx.owner.owner.is(Macro)) {
-        registerCapturer(defn.TastyUniverse_compilationUniverse)
+        registerCapturer(defn.TastyTopLevelSplice_compilationTopLevelSplice)
         // Force a macro to have the context in first position
-        forceCapture(defn.TastyUniverse_compilationUniverse)
+        forceCapture(defn.TastyTopLevelSplice_compilationTopLevelSplice)
         // Force all parameters of the macro to be created in the definition order
         outer.enteredSyms.reverse.foreach(forceCapture)
       }
@@ -567,8 +567,8 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
           case Quoted(quotedTree) =>
             quotation(quotedTree, tree)
           case tree: TypeTree if tree.tpe.typeSymbol.isSplice =>
-            val splicedType = tree.tpe.asInstanceOf[TypeRef].prefix.termSymbol
-            splice(ref(splicedType).select(tpnme.UNARY_~))
+            val splicedType = tree.tpe.stripTypeVar.asInstanceOf[TypeRef].prefix.termSymbol
+            splice(ref(splicedType).select(tpnme.UNARY_~).withPos(tree.pos))
           case tree: Select if tree.symbol.isSplice =>
             splice(tree)
           case tree: RefTree if isCaptured(tree.symbol, level) =>
@@ -577,7 +577,7 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
               splice(t.select(if (tree.isTerm) nme.UNARY_~ else tpnme.UNARY_~))
             if (!isStage0Value(tree.symbol)) captureAndSplice(capturer(tree))
             else if (level == 0) capturer(tree)
-            else captureAndSplice(liftValue(capturer(tree)))
+            else captureAndSplice(liftInlineParamValue(capturer(tree)))
           case Block(stats, _) =>
             val last = enteredSyms
             stats.foreach(markDef)
@@ -632,24 +632,27 @@ class ReifyQuotes extends MacroTransformWithImplicits with InfoTransformer {
         }
       }
 
-    private def liftValue(tree: Tree)(implicit ctx: Context): Tree = {
-      val reqType = defn.QuotedLiftableType.appliedTo(tree.tpe.widen)
-      val liftable = ctx.typer.inferImplicitArg(reqType, tree.pos)
-      liftable.tpe match {
-        case fail: SearchFailureType =>
-          ctx.error(i"""
-                  |
-                  | The access would be accepted with the right Liftable, but
-                  | ${ctx.typer.missingArgMsg(liftable, reqType, "")}""")
-          EmptyTree
-        case _ =>
-          liftable.select("toExpr".toTermName).appliedTo(tree)
-      }
+    /** Takes a reference to an inline parameter `tree` and lifts it to an Expr */
+    private def liftInlineParamValue(tree: Tree)(implicit ctx: Context): Tree = {
+      val tpSym = tree.tpe.widenDealias.classSymbol
+
+      val lifter =
+        if (tpSym eq defn.BooleanClass) defn.QuotedLiftable_BooleanIsLiftable
+        else if (tpSym eq defn.ByteClass) defn.QuotedLiftable_ByteIsLiftable
+        else if (tpSym eq defn.CharClass) defn.QuotedLiftable_CharIsLiftable
+        else if (tpSym eq defn.ShortClass) defn.QuotedLiftable_ShortIsLiftable
+        else if (tpSym eq defn.IntClass) defn.QuotedLiftable_IntIsLiftable
+        else if (tpSym eq defn.LongClass) defn.QuotedLiftable_LongIsLiftable
+        else if (tpSym eq defn.FloatClass) defn.QuotedLiftable_FloatIsLiftable
+        else if (tpSym eq defn.DoubleClass) defn.QuotedLiftable_DoubleIsLiftable
+        else defn.QuotedLiftable_StringIsLiftable
+
+      ref(lifter).select("toExpr".toTermName).appliedTo(tree)
     }
 
     private def isStage0Value(sym: Symbol)(implicit ctx: Context): Boolean =
       (sym.is(Inline) && sym.owner.is(Macro) && !defn.isFunctionType(sym.info)) ||
-      sym == defn.TastyUniverse_compilationUniverse // intrinsic value at stage 0
+      sym == defn.TastyTopLevelSplice_compilationTopLevelSplice // intrinsic value at stage 0
 
     private def liftList(list: List[Tree], tpe: Type)(implicit ctx: Context): Tree = {
       list.foldRight[Tree](ref(defn.NilModule)) { (x, acc) =>

@@ -167,11 +167,14 @@ object SymDenotations {
     /** Unset given flags(s) of this denotation */
     final def resetFlag(flags: FlagSet): Unit = { myFlags &~= flags }
 
-    /** Set applicable flags from `flags` which is a subset of {NoInits, PureInterface} */
-    final def setNoInitsFlags(flags: FlagSet): Unit = {
-      val mask = if (myFlags.is(Trait)) NoInitsInterface else NoInits
-      setFlag(flags & mask)
-    }
+    /** Set applicable flags in {NoInits, PureInterface}
+     *  @param  parentFlags  The flags that match the class or trait's parents
+     *  @param  bodyFlags    The flags that match the class or trait's body
+     */
+    final def setNoInitsFlags(parentFlags: FlagSet, bodyFlags: FlagSet): Unit =
+      setFlag(
+        if (myFlags.is(Trait)) NoInitsInterface & bodyFlags // no parents are initialized from a trait
+        else NoInits & bodyFlags & parentFlags)
 
     private def isCurrent(fs: FlagSet) =
       fs <= (
@@ -580,13 +583,13 @@ object SymDenotations {
       myFlags.is(ModuleClass) && (myFlags.is(PackageClass) || isStatic)
 
     /** Is this denotation defined in the same scope and compilation unit as that symbol? */
-    final def isCoDefinedWith(that: Symbol)(implicit ctx: Context) =
-      (this.effectiveOwner == that.effectiveOwner) &&
+    final def isCoDefinedWith(other: Symbol)(implicit ctx: Context) =
+      (this.effectiveOwner == other.effectiveOwner) &&
       (  !(this.effectiveOwner is PackageClass)
-        || this.unforcedIsAbsent || that.unforcedIsAbsent
+        || this.unforcedIsAbsent || other.unforcedIsAbsent
         || { // check if they are defined in the same file(or a jar)
            val thisFile = this.symbol.associatedFile
-           val thatFile = that.symbol.associatedFile
+           val thatFile = other.associatedFile
            (  thisFile == null
            || thatFile == null
            || thisFile.path == thatFile.path // Cheap possibly wrong check, then expensive normalization
@@ -597,7 +600,13 @@ object SymDenotations {
 
     /** Is this a denotation of a stable term (or an arbitrary type)? */
     final def isStable(implicit ctx: Context) =
-      isType || !is(Erased) && (is(Stable) || !(is(UnstableValue) || info.isInstanceOf[ExprType]))
+      isType || is(Stable) || !(is(UnstableValue) || info.isInstanceOf[ExprType])
+
+    /** Is this a denotation of a class that does not have - either direct or inherited -
+     *  initaliazion code?
+     */
+    def isNoInitsClass(implicit ctx: Context) =
+      isClass && asClass.baseClasses.forall(_.is(NoInits))
 
     /** Is this a "real" method? A real method is a method which is:
      *  - not an accessor

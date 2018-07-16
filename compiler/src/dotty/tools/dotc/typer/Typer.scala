@@ -659,7 +659,7 @@ class Typer extends Namer
   }
 
   def typedBlockStats(stats: List[untpd.Tree])(implicit ctx: Context): (Context, List[tpd.Tree]) =
-    (indexAndAnnotate(stats), typedStats(stats, ctx.owner))
+    (index(stats), typedStats(stats, ctx.owner))
 
   def typedBlock(tree: untpd.Block, pt: Type)(implicit ctx: Context) = track("typedBlock") {
     val (exprCtx, stats1) = typedBlockStats(tree.stats)
@@ -1270,7 +1270,7 @@ class Typer extends Namer
 
   def typedLambdaTypeTree(tree: untpd.LambdaTypeTree)(implicit ctx: Context): Tree = track("typedLambdaTypeTree") {
     val LambdaTypeTree(tparams, body) = tree
-    indexAndAnnotate(tparams)
+    index(tparams)
     val tparams1 = tparams.mapconserve(typed(_).asInstanceOf[TypeDef])
     val body1 = typedType(tree.body)
     assignType(cpy.LambdaTypeTree(tree)(tparams1, body1), tparams1, body1)
@@ -1339,20 +1339,26 @@ class Typer extends Namer
     assignType(cpy.Alternative(tree)(trees1), trees1)
   }
 
+  /** The context to be used for an annotation of `mdef`.
+   *  This should be the context enclosing `mdef`, or if `mdef` defines a parameter
+   *  the context enclosing the owner of `mdef`.
+   *  Furthermore, we need to evaluate annotation arguments in an expression context,
+   *  since classes defined in a such arguments should not be entered into the
+   *  enclosing class.
+   */
+  def annotContext(mdef: untpd.Tree, sym: Symbol)(implicit ctx: Context): Context = {
+    def isInner(owner: Symbol) = owner == sym || sym.is(Param) && owner == sym.owner
+    val c = ctx.outersIterator.dropWhile(c => isInner(c.owner)).next()
+    c.property(ExprOwner) match {
+      case Some(exprOwner) if c.owner.isClass => c.exprContext(mdef, exprOwner)
+      case _ => c
+    }
+  }
+
   def completeAnnotations(mdef: untpd.MemberDef, sym: Symbol)(implicit ctx: Context): Unit = {
     // necessary to force annotation trees to be computed.
     sym.annotations.foreach(_.ensureCompleted)
-    lazy val annotCtx = {
-      val c = ctx.outersIterator.dropWhile(_.owner == sym).next()
-      c.property(ExprOwner) match {
-        case Some(exprOwner) if c.owner.isClass =>
-          // We need to evaluate annotation arguments in an expression context, since
-          // classes defined in a such arguments should not be entered into the
-          // enclosing class.
-          c.exprContext(mdef, exprOwner)
-        case _ => c
-      }
-    }
+    lazy val annotCtx = annotContext(mdef, sym)
     // necessary in order to mark the typed ahead annotations as definitely typed:
     untpd.modsDeco(mdef).mods.annotations.foreach(typedAnnotation(_)(annotCtx))
   }
@@ -1413,10 +1419,7 @@ class Typer extends Namer
     val tparams1 = tparams mapconserve (typed(_).asInstanceOf[TypeDef])
     val vparamss1 = vparamss nestedMapconserve (typed(_).asInstanceOf[ValDef])
     vparamss1.foreach(checkNoForwardDependencies)
-    if (sym is Implicit) {
-      checkImplicitParamsNotSingletons(vparamss1)
-      checkImplicitConversionDefOK(sym)
-    }
+    if (sym is Implicit) checkImplicitConversionDefOK(sym)
     val tpt1 = checkSimpleKinded(typedType(tpt))
 
     var rhsCtx = ctx
@@ -1534,12 +1537,10 @@ class Typer extends Namer
       val dummy = localDummy(cls, impl)
       val body1 = addAccessorDefs(cls,
         typedStats(impl.body, dummy)(ctx.inClassContext(self1.symbol)))
-      if (!ctx.isAfterTyper)
-        cls.setNoInitsFlags((NoInitsInterface /: body1) ((fs, stat) => fs & defKind(stat)))
 
       // Expand comments and type usecases if `-Ycook-comments` is set.
       if (ctx.settings.YcookComments.value) {
-        cookComments(body1.map(_.symbol), self1.symbol)(ctx.localContext(cdef, cls).setNewScope)
+        cookComments(cls :: body1.map(_.symbol), self1.symbol)(ctx.localContext(cdef, cls).setNewScope)
       }
 
       checkNoDoubleDeclaration(cls)
@@ -1919,7 +1920,8 @@ class Typer extends Namer
         traverse(stats ++ rest)
       case stat :: rest =>
         val stat1 = typed(stat)(ctx.exprContext(stat, exprOwner))
-        if (!ctx.isAfterTyper && isPureExpr(stat1) && !stat1.tpe.isRef(defn.UnitClass))
+        if (!ctx.isAfterTyper && isPureExpr(stat1) &&
+            !stat1.tpe.isRef(defn.UnitClass) && !isSelfOrSuperConstrCall(stat1))
           ctx.warning(em"a pure expression does nothing in statement position", stat.pos)
         buf += stat1
         traverse(rest)

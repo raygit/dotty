@@ -3,6 +3,7 @@ package dotc
 package core
 package tasty
 
+import Comments.CommentsContext
 import Contexts._, Symbols._, Types._, Scopes._, SymDenotations._, Names._, NameOps._
 import StdNames._, Denotations._, Flags._, Constants._, Annotations._
 import NameKinds._
@@ -25,13 +26,15 @@ import scala.quoted.Types.TreeType
 import scala.quoted.Exprs.TastyTreeExpr
 
 /** Unpickler for typed trees
- *  @param reader          the reader from which to unpickle
- *  @param tastyName       the nametable
- *  @param posUNpicklerOpt the unpickler for positions, if it exists
+ *  @param reader              the reader from which to unpickle
+ *  @param posUnpicklerOpt     the unpickler for positions, if it exists
+ *  @param commentUnpicklerOpt the unpickler for comments, if it exists
+ *  @param splices
  */
 class TreeUnpickler(reader: TastyReader,
                     nameAtRef: NameRef => TermName,
                     posUnpicklerOpt: Option[PositionUnpickler],
+                    commentUnpicklerOpt: Option[CommentUnpickler],
                     splices: Seq[Any]) {
   import TastyFormat._
   import TreeUnpickler._
@@ -729,8 +732,15 @@ class TreeUnpickler(reader: TastyReader,
       val localCtx = localContext(sym)
 
       def readRhs(implicit ctx: Context) =
-        if (nothingButMods(end)) EmptyTree
-        else readLater(end, rdr => ctx => rdr.readTerm()(ctx.retractMode(Mode.InSuperCall)))
+        if (nothingButMods(end))
+          EmptyTree
+        else if (sym.isInlinedMethod)
+          // The body of an inline method is stored in an annotation, so no need to unpickle it again
+          new Trees.Lazy[Tree] {
+            def complete(implicit ctx: Context) = typer.Inliner.bodyToInline(sym)
+          }
+        else
+          readLater(end, rdr => ctx => rdr.readTerm()(ctx.retractMode(Mode.InSuperCall)))
 
       def ValDef(tpt: Tree) =
         ta.assignType(untpd.ValDef(sym.name.asTermName, tpt, readRhs(localCtx)), sym)
@@ -820,6 +830,16 @@ class TreeUnpickler(reader: TastyReader,
         // Child annotations for local classes and enum values are not pickled, so
         // need to be re-established here.
         sym.registerIfChild(late = true)
+
+      if (ctx.mode.is(Mode.ReadComments)) {
+        assert(ctx.docCtx.isDefined, "Mode is `ReadComments`, but no `docCtx` is set.")
+        commentUnpicklerOpt.foreach { commentUnpickler =>
+          val comment = commentUnpickler.commentAt(start)
+          ctx.docCtx.get.addDocstring(tree.symbol, comment)
+          tree.setComment(comment)
+        }
+      }
+
       tree
     }
 
@@ -851,7 +871,7 @@ class TreeUnpickler(reader: TastyReader,
         else EmptyValDef
       cls.info = ClassInfo(cls.owner.thisType, cls, parentTypes, cls.unforcedDecls,
         if (self.isEmpty) NoType else self.tpt.tpe)
-      cls.setNoInitsFlags(fork.indexStats(end))
+      cls.setNoInitsFlags(parentsKind(parents), fork.indexStats(end))
       val constr = readIndexedDef().asInstanceOf[DefDef]
       val mappedParents = parents.map(_.changeOwner(localDummy, constr.symbol))
 

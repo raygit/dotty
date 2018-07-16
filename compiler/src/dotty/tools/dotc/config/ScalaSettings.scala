@@ -2,7 +2,7 @@ package dotty.tools.dotc
 package config
 
 import java.io.File
-import dotty.tools.io.{ Directory, Path }
+import dotty.tools.io.{ Directory, PlainDirectory }
 
 import PathResolver.Defaults
 import rewrite.Rewrites
@@ -20,7 +20,8 @@ class ScalaSettings extends Settings.SettingGroup {
   val scansource = BooleanSetting("-scansource", "Scan source files to locate classes for which class-name != file-name")
 
   val classpath = PathSetting("-classpath", "Specify where to find user class files.", defaultClasspath) withAbbreviation "-cp"
-  val outputDir = PathSetting("-d", "directory|jar", "destination for generated classfiles.", ".")
+  val outputDir = OutputSetting("-d", "directory|jar", "destination for generated classfiles.",
+    new PlainDirectory(Directory(".")))
   val priorityclasspath = PathSetting("-priorityclasspath", "class path that takes precedence over all other paths (or testing only)", "")
 
   /** Other settings */
@@ -116,7 +117,7 @@ class ScalaSettings extends Settings.SettingGroup {
   val YshowPrintErrors = BooleanSetting("-Yshow-print-errors", "don't suppress exceptions thrown during tree printing.")
   val YtestPickler = BooleanSetting("-Ytest-pickler", "self-test for pickling functionality; should be used with -Ystop-after:pickler")
   val YcheckReentrant = BooleanSetting("-Ycheck-reentrant", "check that compiled program does not contain vars that can be accessed from a global root.")
-  val YkeepComments = BooleanSetting("-Ykeep-comments", "Keep comments when scanning source files.")
+  val YdropComments = BooleanSetting("-Ydrop-comments", "Drop comments when scanning source files.")
   val YcookComments = BooleanSetting("-Ycook-comments", "Cook the comments (type check `@usecase`, etc.)")
   val YforceSbtPhases = BooleanSetting("-Yforce-sbt-phases", "Run the phases used by sbt for incremental compilation (ExtractDependencies and ExtractAPI) even if the compiler is ran outside of sbt, for debugging.")
   val YdumpSbtInc = BooleanSetting("-Ydump-sbt-inc", "For every compiled foo.scala, output the API representation and dependencies used for sbt incremental compilation in foo.inc, implies -Yforce-sbt-phases.")

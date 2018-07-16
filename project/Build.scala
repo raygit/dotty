@@ -32,7 +32,7 @@ object ExposedValues extends AutoPlugin {
 
 object Build {
 
-  val baseVersion = "0.9.0"
+  val baseVersion = "0.10.0"
   val scalacVersion = "2.12.6"
 
   val dottyOrganization = "ch.epfl.lamp"
@@ -518,6 +518,8 @@ object Build {
         ("org.scala-lang.modules" %% "scala-xml" % "1.1.0").withDottyCompat(scalaVersion.value),
         "org.scala-lang" % "scala-library" % scalacVersion % "test",
         Dependencies.compilerInterface(sbtVersion.value),
+        "org.jline" % "jline" % "3.7.0", // used by the REPL
+        "org.jline" % "jline-terminal-jna" % "3.7.0" // needed for Windows
       ),
 
       // For convenience, change the baseDirectory when running the compiler
@@ -1136,13 +1138,21 @@ object Build {
     publishArtifact := false,
     packGenerateMakefile := false,
     packExpandedClasspath := true,
-    packResourceDir += (baseDirectory.value / "bin" -> "bin"),
     packArchiveName := "dotty-" + dottyVersion
   )
 
   lazy val dist = project.asDist(NonBootstrapped)
+    .settings(
+      packResourceDir += (baseDirectory.value / "bin" -> "bin"),
+    )
   lazy val `dist-bootstrapped` = project.asDist(Bootstrapped)
+    .settings(
+      packResourceDir += ((baseDirectory in dist).value / "bin" -> "bin"),
+    )
   lazy val `dist-optimised` = project.asDist(BootstrappedOptimised)
+    .settings(
+      packResourceDir += ((baseDirectory in dist).value / "bin" -> "bin"),
+    )
 
   // /** A sandbox to play with the Scala.js back-end of dotty.
   //  *
@@ -1235,7 +1245,9 @@ object Build {
       withCommonSettings.
       dependsOn(`dotty-interfaces`, dottyCompiler, dottyLibrary, dottyDoc).
       settings(commonDistSettings).
-      bootstrappedSettings(target := baseDirectory.value / "target") // override setting in commonBootstrappedSettings
+      bootstrappedSettings(
+        target := baseDirectory.value / "target" // override setting in commonBootstrappedSettings 
+      )
 
     def withCommonSettings(implicit mode: Mode): Project = project.settings(mode match {
       case NonBootstrapped => commonNonBootstrappedSettings
