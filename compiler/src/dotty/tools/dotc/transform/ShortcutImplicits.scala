@@ -171,7 +171,7 @@ object ShortcutImplicits {
     (specializeMonoTargets || !sym.isEffectivelyFinal || sym.allOverriddenSymbols.nonEmpty)
 
   /** @pre    The type's final result type is an implicit function type `implicit Ts => R`.
-    *  @return The type of the `apply` member of `implicit Ts => R`.
+    * @return The type of the `apply` member of `implicit Ts => R`.
     */
   private def directInfo(info: Type)(implicit ctx: Context): Type = info match {
     case info: PolyType   => info.derivedLambdaType(resType = directInfo(info.resultType))
@@ -181,11 +181,15 @@ object ShortcutImplicits {
   }
 
   /** A new `m$direct` method to accompany the given method `m` */
-  private def newShortcutMethod(sym: Symbol)(implicit ctx: Context): Symbol =
-    sym.copy(
+  private def newShortcutMethod(sym: Symbol)(implicit ctx: Context): Symbol = {
+    val direct = sym.copy(
       name = DirectMethodName(sym.name.asTermName).asInstanceOf[sym.ThisName],
-      flags = sym.flags &~ Override | Synthetic,
+      flags = sym.flags | Synthetic,
       info = directInfo(sym.info))
+    // make flags conformant to RefChecks. Override is meaningless after RefChecks.
+    if (direct.allOverriddenSymbols.isEmpty) direct.resetFlag(Override)
+    direct
+  }
 
   def shortcutMethod(sym: Symbol, phase: DenotTransformer)(implicit ctx: Context) =
     sym.owner.info.decl(DirectMethodName(sym.name.asTermName))

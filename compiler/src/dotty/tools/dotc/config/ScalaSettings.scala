@@ -90,7 +90,7 @@ class ScalaSettings extends Settings.SettingGroup {
   val YdebugNames = BooleanSetting("-Ydebug-names", "Show internal representation of names")
   val YtermConflict = ChoiceSetting("-Yresolve-term-conflict", "strategy", "Resolve term conflicts", List("package", "object", "error"), "error")
   val Ylog = PhasesSetting("-Ylog", "Log operations during")
-  val YemitTasty = BooleanSetting("-Yemit-tasty", "Generate tasty in separate *.tasty file.")
+  val YemitTastyInClass = BooleanSetting("-Yemit-tasty-in-class", "Generate tasty in the .class file and add an empty *.hasTasty file.")
   val YlogClasspath = BooleanSetting("-Ylog-classpath", "Output information about what classpath is being applied.")
   val YdisableFlatCpCaching  = BooleanSetting("-YdisableFlatCpCaching", "Do not cache flat classpath representation of classpath elements from jars across compiler instances.")
 
@@ -143,10 +143,7 @@ class ScalaSettings extends Settings.SettingGroup {
   val YshowNoInline = BooleanSetting("-Yshow-no-inline", "Show inlined code without the 'inlined from' info")
 
   /** Linker specific flags */
-  val optimise = BooleanSetting("-optimise", "Generates faster bytecode by applying local optimisations to the .program") withAbbreviation "-optimize"
   val Xlink = BooleanSetting("-Xlink", "Recompile library code with the application.")
-  val YoptPhases = PhasesSetting("-Yopt-phases", "Restrict the optimisation phases to execute under -optimise.")
-  val YoptFuel = IntSetting("-Yopt-fuel", "Maximum number of optimisations performed under -optimise.", -1)
   val YnoDecodeStacktraces = BooleanSetting("-Yno-decode-stacktraces", "Show raw StackOverflow stacktraces, instead of decoding them into triggering operations.")
 
   /** Dottydoc specific settings */
