@@ -165,7 +165,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
       val leftArg = if (isRightAssoc && isInfixType(l)) "(" ~ argText(l) ~ ")" else argText(l)
       val rightArg = if (!isRightAssoc && isInfixType(r)) "(" ~ argText(r) ~ ")" else argText(r)
 
-      leftArg ~ " " ~ toTextLocal(op) ~ " " ~ rightArg
+      leftArg ~ " " ~ simpleNameString(op.classSymbol) ~ " " ~ rightArg
     }
 
     homogenize(tp) match {
@@ -208,7 +208,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
            ": " ~ toText(tp.memberProto) ~ " }"
       case tp: ViewProto =>
         return toText(tp.argType) ~ " ?=>? " ~ toText(tp.resultType)
-      case tp @ FunProto(args, resultType, _) =>
+      case tp @ FunProto(args, resultType) =>
         val argsText = args match {
           case dummyTreeOfType(tp) :: Nil if !(tp isRef defn.NullClass) => "null: " ~ toText(tp)
           case _ => toTextGlobal(args, ", ")

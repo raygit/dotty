@@ -134,7 +134,7 @@ object Types {
     }
 
     /** Is this type different from NoType? */
-    def exists: Boolean = true
+    final def exists: Boolean = this.ne(NoType)
 
     /** This type, if it exists, otherwise `that` type */
     def orElse(that: => Type) = if (exists) this else that
@@ -621,14 +621,14 @@ object Types {
           val jointInfo =
             if (rinfo.isAlias) rinfo
             else if (pinfo.isAlias) pinfo
-            else if (ctx.pendingMemberSearches.contains(name)) pinfo safe_& rinfo
+            else if (ctx.base.pendingMemberSearches.contains(name)) pinfo safe_& rinfo
             else pinfo recoverable_& rinfo
           pdenot.asSingleDenotation.derivedSingleDenotation(pdenot.symbol, jointInfo)
         } else {
           pdenot & (
             new JointRefDenotation(NoSymbol, rinfo, Period.allInRun(ctx.runId)),
             pre,
-            safeIntersection = ctx.pendingMemberSearches.contains(name))
+            safeIntersection = ctx.base.pendingMemberSearches.contains(name))
         }
       }
 
@@ -670,13 +670,13 @@ object Types {
       }
 
       def goAnd(l: Type, r: Type) = {
-        go(l) & (go(r), pre, safeIntersection = ctx.pendingMemberSearches.contains(name))
+        go(l) & (go(r), pre, safeIntersection = ctx.base.pendingMemberSearches.contains(name))
       }
 
-      val recCount = ctx.findMemberCount
+      val recCount = ctx.base.findMemberCount
       if (recCount >= Config.LogPendingFindMemberThreshold)
-        ctx.pendingMemberSearches = name :: ctx.pendingMemberSearches
-      ctx.findMemberCount = recCount + 1
+        ctx.base.pendingMemberSearches = name :: ctx.base.pendingMemberSearches
+      ctx.base.findMemberCount = recCount + 1
       try go(this)
       catch {
         case ex: Throwable =>
@@ -693,8 +693,8 @@ object Types {
       }
       finally {
         if (recCount >= Config.LogPendingFindMemberThreshold)
-          ctx.pendingMemberSearches = ctx.pendingMemberSearches.tail
-        ctx.findMemberCount = recCount
+          ctx.base.pendingMemberSearches = ctx.base.pendingMemberSearches.tail
+        ctx.base.findMemberCount = recCount
       }
     }
 
@@ -1593,6 +1593,11 @@ object Types {
     def isMatchedBy(tp: Type)(implicit ctx: Context): Boolean
     def fold[T](x: T, ta: TypeAccumulator[T])(implicit ctx: Context): T
     def map(tm: TypeMap)(implicit ctx: Context): ProtoType
+
+    /** If this prototype captures a context, the same prototype except that the result
+     *  captures the given context `ctx`.
+     */
+    def withContext(ctx: Context): ProtoType = this
   }
 
   /** Implementations of this trait cache the results of `narrow`. */
@@ -1930,8 +1935,8 @@ object Types {
      *  not loop before the error is detected.
      */
     final def controlled[T](op: => T)(implicit ctx: Context): T = try {
-      ctx.underlyingRecursions += 1
-      if (ctx.underlyingRecursions < Config.LogPendingUnderlyingThreshold)
+      ctx.base.underlyingRecursions += 1
+      if (ctx.base.underlyingRecursions < Config.LogPendingUnderlyingThreshold)
         op
       else if (ctx.pendingUnderlying contains this)
         throw CyclicReference(symbol)
@@ -1943,7 +1948,7 @@ object Types {
           ctx.pendingUnderlying -= this
         }
     } finally {
-      ctx.underlyingRecursions -= 1
+      ctx.base.underlyingRecursions -= 1
     }
 
     /** The argument corresponding to class type parameter `tparam` as seen from
@@ -2304,9 +2309,9 @@ object Types {
   }
 
   /** A refined type parent { refinement }
-   *  @param refinedName  The name of the refinement declaration
-   *  @param infoFn: A function that produces the info of the refinement declaration,
-   *                 given the refined type itself.
+   *  @param parent      The type being refined
+   *  @param refinedName The name of the refinement declaration
+   *  @param refinedInfo The info of the refinement declaration
    */
   abstract case class RefinedType(parent: Type, refinedName: Name, refinedInfo: Type) extends RefinedOrRecType {
 
@@ -2365,6 +2370,31 @@ object Types {
     }
   }
 
+  /** A recursive type. Instances should be constructed via the companion object.
+   *
+   *  @param parentExp A function that, given a recursive type R, produces a type
+   *                   that can refer to R via a `RecThis(R)` node. This is used to
+   *                   "tie the knot".
+   *
+   *  For example, in
+   *    class C { type T1; type T2 }
+   *    type C2 = C { type T1; type T2 = T1  }
+   *
+   *  The type of `C2` is a recursive type `{(x) => C{T1; T2 = x.T1}}`, written as
+   *
+   *    RecType(
+   *      RefinedType(
+   *        RefinedType(
+   *         TypeRef(...,class C),
+   *         T1,
+   *         TypeBounds(...)),
+   *        T2,
+   *        TypeBounds(
+   *          TypeRef(RecThis(...),T1),
+   *          TypeRef(RecThis(...),T1))))
+   *
+   *  Where `RecThis(...)` points back to the enclosing `RecType`.
+   */
   class RecType(parentExp: RecType => Type) extends RefinedOrRecType with BindingType {
 
     // See discussion in findMember#goRec why these vars are needed
@@ -2433,7 +2463,7 @@ object Types {
      *   1. Nested Rec types on the type's spine are merged with the outer one.
      *   2. Any refinement of the form `type T = z.T` on the spine of the type
      *      where `z` refers to the created rec-type is replaced by
-     *      `type T`. This avoids infinite recursons later when we
+     *      `type T`. This avoids infinite recursions later when we
      *      try to follow these references.
      *   TODO: Figure out how to guarantee absence of cycles
      *         of length > 1
@@ -2454,6 +2484,8 @@ object Types {
       }
       unique(rt.derivedRecType(normalize(rt.parent))).checkInst
     }
+
+    /** Create a `RecType`, but only if the type generated by `parentExp` is indeed recursive. */
     def closeOver(parentExp: RecType => Type)(implicit ctx: Context) = {
       val rt = this(parentExp)
       if (rt.isReferredToBy(rt.parent)) rt else rt.parent
@@ -3190,7 +3222,7 @@ object Types {
     def isTypeParam(implicit ctx: Context) = tl.paramNames.head.isTypeName
     def paramName(implicit ctx: Context) = tl.paramNames(n)
     def paramInfo(implicit ctx: Context) = tl.paramInfos(n)
-    def paramInfoAsSeenFrom(pre: Type)(implicit ctx: Context) = paramInfo.asSeenFrom(pre, pre.classSymbol)
+    def paramInfoAsSeenFrom(pre: Type)(implicit ctx: Context) = paramInfo
     def paramInfoOrCompleter(implicit ctx: Context): Type = paramInfo
     def paramVariance(implicit ctx: Context): Int = tl.paramNames(n).variance
     def paramRef(implicit ctx: Context): Type = tl.paramRefs(n)
@@ -3766,7 +3798,6 @@ object Types {
 
   /** Sentinel for "missing type" */
   @sharable case object NoType extends CachedGroundType {
-    override def exists = false
     override def computeHash(bs: Binders) = hashSeed
   }
 
@@ -3788,7 +3819,7 @@ object Types {
     def apply(msg: => Message)(implicit ctx: Context): ErrorType = {
       val et = new ErrorType {
         def msg(implicit ctx: Context): Message =
-          ctx.errorTypeMsg.get(this) match {
+          ctx.base.errorTypeMsg.get(this) match {
             case Some(msgFun) => msgFun()
             case None => "error message from previous run no longer available"
           }

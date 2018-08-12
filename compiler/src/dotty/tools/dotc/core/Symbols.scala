@@ -646,12 +646,12 @@ object Symbols {
 
     def toText(printer: Printer): Text = printer.toText(this)
 
-    def showLocated(implicit ctx: Context): String = ctx.locatedText(this).show
-    def showExtendedLocation(implicit ctx: Context): String = ctx.extendedLocationText(this).show
-    def showDcl(implicit ctx: Context): String = ctx.dclText(this).show
-    def showKind(implicit ctx: Context): String = ctx.kindString(this)
-    def showName(implicit ctx: Context): String = ctx.nameString(this)
-    def showFullName(implicit ctx: Context): String = ctx.fullNameString(this)
+    def showLocated(implicit ctx: Context): String = ctx.printer.locatedText(this).show
+    def showExtendedLocation(implicit ctx: Context): String = ctx.printer.extendedLocationText(this).show
+    def showDcl(implicit ctx: Context): String = ctx.printer.dclText(this).show
+    def showKind(implicit ctx: Context): String = ctx.printer.kindString(this)
+    def showName(implicit ctx: Context): String = ctx.printer.nameString(this)
+    def showFullName(implicit ctx: Context): String = ctx.printer.fullNameString(this)
 
     override def hashCode() = id // for debugging.
   }
@@ -668,10 +668,8 @@ object Symbols {
 
     private[this] var myTree: TreeOrProvider = tpd.EmptyTree
 
-    /** If this is either:
-      *   - a top-level class and `-Yretain-trees` is set
-      *   - a top-level class loaded from TASTY and `-tasty` or `-Xlink` is set
-      * then return the TypeDef tree (possibly wrapped inside PackageDefs) for this class, otherwise EmptyTree.
+    /** If this is a top-level class and `-Yretain-trees` (or `-from-tasty`) is set.
+      * Returns the TypeDef tree (possibly wrapped inside PackageDefs) for this class, otherwise EmptyTree.
       * This will force the info of the class.
       */
     def tree(implicit ctx: Context): Tree = treeContaining("")
