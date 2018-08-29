@@ -84,7 +84,7 @@ object Types {
    *
    *  Note: please keep in sync with copy in `docs/docs/internals/type-system.md`.
    */
-  abstract class Type extends DotClass with Hashable with printing.Showable {
+  abstract class Type extends Hashable with printing.Showable {
 
 // ----- Tests -----------------------------------------------------
 
@@ -3868,7 +3868,7 @@ object Types {
    *  A type is a SAM type if it is a reference to a class or trait, which
    *
    *   - has a single abstract method with a method type (ExprType
-   *     and PolyType not allowed!)
+   *     and PolyType not allowed!) whose result type is not an implicit function type
    *   - can be instantiated without arguments or with just () as argument.
    *
    *  The pattern `SAMType(sam)` matches a SAM type, where `sam` is the
@@ -3910,7 +3910,8 @@ object Types {
         // println(s"absMems: ${absMems map (_.show) mkString ", "}")
         if (absMems.size == 1)
           absMems.head.info match {
-            case mt: MethodType if !mt.isParamDependent =>
+            case mt: MethodType if !mt.isParamDependent &&
+                !defn.isImplicitFunctionType(mt.resultType) =>
               val cls = tp.classSymbol
 
               // Given a SAM type such as:
