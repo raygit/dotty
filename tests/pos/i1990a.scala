@@ -1,6 +1,6 @@
 class A { self =>
   class Foo {
-    inline def inlineMeth: Unit = {
+    rewrite def inlineMeth: Unit = {
       println(self)
     }
   }

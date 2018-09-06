@@ -19,6 +19,8 @@ import ErrorReporting.errorType
 import config.Printers.typr
 import collection.mutable
 
+import scala.annotation.internal.sharable
+
 object ProtoTypes {
 
   import tpd._
@@ -71,6 +73,19 @@ object ProtoTypes {
       if (!res) ctx.typerState.resetConstraintTo(savedConstraint)
       res
     }
+
+    /** Constrain result with special case if `meth` is an inlineable method in an inlineable context.
+     *  In that case, we should always succeed and not constrain type parameters in the expected type,
+     *  because the actual return type can be a subtype of the currently known return type.
+     *  However, we should constrain parameters of the declared return type. This distinction is
+     *  achieved by replacing expected type parameters with wildcards.
+     */
+    def constrainResult(meth: Symbol, mt: Type, pt: Type)(implicit ctx: Context): Boolean =
+      if (Inliner.isInlineable(meth)) {
+        constrainResult(mt, wildApprox(pt))
+        true
+      }
+      else constrainResult(mt, pt)
   }
 
   object NoViewsAllowed extends Compatibility {
@@ -195,28 +210,38 @@ object ProtoTypes {
 
   trait ApplyingProto extends ProtoType
 
+  class FunProtoState {
+
+    /** The list of typed arguments, if all arguments are typed */
+    var typedArgs: List[Tree] = Nil
+
+    /** A map in which typed arguments can be stored to be later integrated in `typedArgs`. */
+    var typedArg: SimpleIdentityMap[untpd.Tree, Tree] = SimpleIdentityMap.Empty
+
+    /** A map recording the typer states and constraints in which arguments stored in myTypedArg were typed */
+    var evalState: SimpleIdentityMap[untpd.Tree, (TyperState, Constraint)] = SimpleIdentityMap.Empty
+
+    /** The tupled version of this prototype, if it has been computed */
+    var tupled: Type = NoType
+
+    /** If true, the application of this prototype was canceled. */
+    var toDrop: Boolean = false
+  }
+
   /** A prototype for expressions that appear in function position
    *
    *  [](args): resultType
    */
-  case class FunProto(args: List[untpd.Tree], resType: Type, typer: Typer)(implicit ctx: Context)
+  case class FunProto(args: List[untpd.Tree], resType: Type)(typer: Typer, state: FunProtoState = new FunProtoState)(implicit ctx: Context)
   extends UncachedGroundType with ApplyingProto {
-    private[this] var myTypedArgs: List[Tree] = Nil
-
     override def resultType(implicit ctx: Context) = resType
-
-    /** A map in which typed arguments can be stored to be later integrated in `typedArgs`. */
-    private[this] var myTypedArg: SimpleIdentityMap[untpd.Tree, Tree] = SimpleIdentityMap.Empty
-
-    /** A map recording the typer states and constraints in which arguments stored in myTypedArg were typed */
-    private[this] var evalState: SimpleIdentityMap[untpd.Tree, (TyperState, Constraint)] = SimpleIdentityMap.Empty
 
     def isMatchedBy(tp: Type)(implicit ctx: Context) =
       typer.isApplicable(tp, Nil, unforcedTypedArgs, resultType)
 
     def derivedFunProto(args: List[untpd.Tree] = this.args, resultType: Type, typer: Typer = this.typer) =
       if ((args eq this.args) && (resultType eq this.resultType) && (typer eq this.typer)) this
-      else new FunProto(args, resultType, typer)
+      else new FunProto(args, resultType)(typer)
 
     override def notApplied = WildcardType
 
@@ -229,19 +254,19 @@ object ProtoTypes {
      *  @return True if all arguments have types (in particular, no types were forgotten).
      */
     def allArgTypesAreCurrent()(implicit ctx: Context): Boolean = {
-      evalState foreachBinding { (arg, tstateConstr) =>
+      state.evalState foreachBinding { (arg, tstateConstr) =>
         if ((tstateConstr._1.uncommittedAncestor.constraint `ne` ctx.typerState.constraint) ||
             tstateConstr._2.isRetracted) {
-          typr.println(i"need to invalidate $arg / ${myTypedArg(arg)}, ${tstateConstr._2}, current = ${ctx.typerState.constraint}")
-          myTypedArg = myTypedArg.remove(arg)
-          evalState = evalState.remove(arg)
+          typr.println(i"need to invalidate $arg / ${state.typedArg(arg)}, ${tstateConstr._2}, current = ${ctx.typerState.constraint}")
+          state.typedArg = state.typedArg.remove(arg)
+          state.evalState = state.evalState.remove(arg)
         }
       }
-      myTypedArg.size == args.length
+      state.typedArg.size == args.length
     }
 
     private def cacheTypedArg(arg: untpd.Tree, typerFn: untpd.Tree => Tree, force: Boolean)(implicit ctx: Context): Tree = {
-      var targ = myTypedArg(arg)
+      var targ = state.typedArg(arg)
       if (targ == null) {
         if (!force && untpd.functionWithUnknownParamType(arg).isDefined)
           // If force = false, assume ? rather than reporting an error.
@@ -255,8 +280,8 @@ object ProtoTypes {
             // typerstate if there are no errors. If we also omitted the next two lines
             // when warning were emitted, `pos/t1756.scala` would fail when run with -feature.
             // It would produce an orphan type parameter for CI when pickling.
-            myTypedArg = myTypedArg.updated(arg, targ)
-            evalState = evalState.updated(arg, (ctx.typerState, ctx.typerState.constraint))
+            state.typedArg = state.typedArg.updated(arg, targ)
+            state.evalState = state.evalState.updated(arg, (ctx.typerState, ctx.typerState.constraint))
           }
         }
       }
@@ -270,9 +295,9 @@ object ProtoTypes {
      *                  "missing parameter type" error
      */
     private def typedArgs(force: Boolean): List[Tree] = {
-      if (myTypedArgs.size != args.length)
-        myTypedArgs = args.mapconserve(cacheTypedArg(_, typer.typed(_), force))
-      myTypedArgs
+      if (state.typedArgs.size != args.length)
+        state.typedArgs = args.mapconserve(cacheTypedArg(_, typer.typed(_), force))
+      state.typedArgs
     }
 
     def typedArgs: List[Tree] = typedArgs(force = true)
@@ -291,24 +316,19 @@ object ProtoTypes {
      *  @pre `arg` has been typed before
      */
     def typeOfArg(arg: untpd.Tree)(implicit ctx: Context): Type =
-      myTypedArg(arg).tpe
-
-    private[this] var myTupled: Type = NoType
+      state.typedArg(arg).tpe
 
     /** The same proto-type but with all arguments combined in a single tuple */
-    def tupled: FunProto = myTupled match {
+    def tupled: FunProto = state.tupled match {
       case pt: FunProto =>
         pt
       case _ =>
-        myTupled = new FunProto(untpd.Tuple(args) :: Nil, resultType, typer)
+        state.tupled = new FunProto(untpd.Tuple(args) :: Nil, resultType)(typer)
         tupled
     }
 
     /** Somebody called the `tupled` method of this prototype */
-    def isTupled: Boolean = myTupled.isInstanceOf[FunProto]
-
-    /** If true, the application of this prototype was canceled. */
-    private[this] var toDrop: Boolean = false
+    def isTupled: Boolean = state.tupled.isInstanceOf[FunProto]
 
     /** Cancel the application of this prototype. This can happen for a nullary
      *  application `f()` if `f` refers to a symbol that exists both in parameterless
@@ -318,10 +338,10 @@ object ProtoTypes {
      */
     def markAsDropped() = {
       assert(args.isEmpty)
-      toDrop = true
+      state.toDrop = true
     }
 
-    def isDropped: Boolean = toDrop
+    def isDropped: Boolean = state.toDrop
 
     override def toString = s"FunProto(${args mkString ","} => $resultType)"
 
@@ -332,15 +352,19 @@ object ProtoTypes {
       ta(ta.foldOver(x, typedArgs.tpes), resultType)
 
     override def deepenProto(implicit ctx: Context) = derivedFunProto(args, resultType.deepenProto, typer)
-  }
 
+    override def withContext(newCtx: Context) =
+      if (newCtx `eq` ctx) this
+      else new FunProto(args, resType)(typer, state)(newCtx)
+  }
 
   /** A prototype for expressions that appear in function position
    *
    *  [](args): resultType, where args are known to be typed
    */
-  class FunProtoTyped(args: List[tpd.Tree], resultType: Type, typer: Typer)(implicit ctx: Context) extends FunProto(args, resultType, typer)(ctx) {
+  class FunProtoTyped(args: List[tpd.Tree], resultType: Type)(typer: Typer)(implicit ctx: Context) extends FunProto(args, resultType)(typer)(ctx) {
     override def typedArgs = args
+    override def withContext(ctx: Context) = this
   }
 
   /** A prototype for implicitly inferred views:
@@ -377,7 +401,7 @@ object ProtoTypes {
   }
 
   class UnapplyFunProto(argType: Type, typer: Typer)(implicit ctx: Context) extends FunProto(
-    untpd.TypedSplice(dummyTreeOfType(argType))(ctx) :: Nil, WildcardType, typer)
+    untpd.TypedSplice(dummyTreeOfType(argType))(ctx) :: Nil, WildcardType)(typer)
 
   /** A prototype for expressions [] that are type-parameterized:
    *
@@ -433,10 +457,10 @@ object ProtoTypes {
       s"inconsistent: no typevars were added to committable constraint ${state.constraint}")
 
     def newTypeVars(tl: TypeLambda): List[TypeTree] =
-      for (n <- (0 until tl.paramNames.length).toList)
+      for (paramRef <- tl.paramRefs)
       yield {
         val tt = new TypeVarBinder().withPos(owningTree.pos)
-        val tvar = new TypeVar(tl.paramRefs(n), state)
+        val tvar = new TypeVar(paramRef, state)
         state.ownedVars += tvar
         tt.withType(tvar)
       }
@@ -535,7 +559,7 @@ object ProtoTypes {
   /** Approximate occurrences of parameter types and uninstantiated typevars
    *  by wildcard types.
    */
-  final def wildApprox(tp: Type, theMap: WildApproxMap, seen: Set[TypeParamRef])(implicit ctx: Context): Type = tp match {
+  private def wildApprox(tp: Type, theMap: WildApproxMap, seen: Set[TypeParamRef])(implicit ctx: Context): Type = tp match {
     case tp: NamedType => // default case, inlined for speed
       if (tp.symbol.isStatic || (tp.prefix `eq` NoPrefix)) tp
       else tp.derivedSelect(wildApprox(tp.prefix, theMap, seen))
@@ -603,6 +627,8 @@ object ProtoTypes {
       (if (theMap != null && seen.eq(theMap.seen)) theMap else new WildApproxMap(seen))
         .mapOver(tp)
   }
+
+  final def wildApprox(tp: Type)(implicit ctx: Context): Type = wildApprox(tp, null, Set.empty)
 
   @sharable object AssignProto extends UncachedGroundType with MatchAlways
 

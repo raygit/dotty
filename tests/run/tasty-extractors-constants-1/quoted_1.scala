@@ -1,13 +1,11 @@
 import scala.quoted._
-import dotty.tools.dotc.quoted.Toolbox._
 
 import scala.tasty._
 import scala.tasty.util._
 
 object Macros {
 
-  implicit inline def testMacro: Unit =
-    ~impl(TopLevelSplice.tastyContext) // FIXME infer TopLevelSplice.tastyContext within top level ~
+  implicit rewrite def testMacro: Unit = ~impl
 
   def impl(implicit tasty: Tasty): Expr[Unit] = {
     import tasty._

@@ -22,15 +22,15 @@ class PlainPrinter(_ctx: Context) extends Printer {
   protected def maxToTextRecursions = 100
 
   protected final def controlled(op: => Text): Text =
-    if (ctx.toTextRecursions < maxToTextRecursions && ctx.toTextRecursions < maxSummarized)
+    if (ctx.base.toTextRecursions < maxToTextRecursions && ctx.base.toTextRecursions < maxSummarized)
       try {
-        ctx.toTextRecursions += 1
+        ctx.base.toTextRecursions += 1
         op
       } finally {
-        ctx.toTextRecursions -= 1
+        ctx.base.toTextRecursions -= 1
       }
     else {
-      if (ctx.toTextRecursions >= maxToTextRecursions)
+      if (ctx.base.toTextRecursions >= maxToTextRecursions)
         recursionLimitExceeded()
       "..."
     }
@@ -102,9 +102,14 @@ class PlainPrinter(_ctx: Context) extends Printer {
     (refinementNameString(rt) ~ toTextRHS(rt.refinedInfo)).close
 
   protected def argText(arg: Type): Text = homogenizeArg(arg) match {
-    case arg: TypeBounds => "_" ~ toTextGlobal(arg)
-    case arg => toTextGlobal(arg)
+    case arg: TypeBounds => "_" ~ toText(arg)
+    case arg => toText(arg)
   }
+
+  /** Pretty-print comma-separated type arguments for a constructor to be inserted among parentheses or brackets
+    * (hence with `GlobalPrec` precedence).
+    */
+  protected def argsText(args: List[Type]): Text = atPrec(GlobalPrec) { Text(args.map(arg => argText(arg) ), ", ") }
 
   /** The longest sequence of refinement types, starting at given type
    *  and following parents.
@@ -144,7 +149,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
       case tp: SingletonType =>
         toTextLocal(tp.underlying) ~ "(" ~ toTextRef(tp) ~ ")"
       case AppliedType(tycon, args) =>
-        (toTextLocal(tycon) ~ "[" ~ Text(args map argText, ", ") ~ "]").close
+        (toTextLocal(tycon) ~ "[" ~ argsText(args) ~ "]").close
       case tp: RefinedType =>
         val parent :: (refined: List[RefinedType @unchecked]) =
           refinementChain(tp).reverse
@@ -156,9 +161,9 @@ class PlainPrinter(_ctx: Context) extends Printer {
         }
         finally openRecs = openRecs.tail
       case AndType(tp1, tp2) =>
-        changePrec(AndPrec) { toText(tp1) ~ " & " ~ toText(tp2) }
+        changePrec(AndTypePrec) { toText(tp1) ~ " & " ~ atPrec(AndTypePrec + 1) { toText(tp2) } }
       case OrType(tp1, tp2) =>
-        changePrec(OrPrec) { toText(tp1) ~ " | " ~ toText(tp2) }
+        changePrec(OrTypePrec) { toText(tp1) ~ " | " ~ atPrec(OrTypePrec + 1) { toText(tp2) } }
       case tp: ErrorType =>
         s"<error ${tp.msg.msg}>"
       case tp: WildcardType =>
@@ -435,7 +440,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
         else if (ownr.isAnonymousFunction) nextOuter("function")
         else if (isEmptyPrefix(ownr)) ""
         else if (ownr.isLocalDummy) showLocation(ownr.owner, "locally defined in")
-        else if (ownr.isTerm && !ownr.is(Module | Method)) showLocation(ownr, "in the initalizer of")
+        else if (ownr.isTerm && !ownr.is(Module | Method)) showLocation(ownr, "in the initializer of")
         else showLocation(ownr, "in")
       }
       recur(sym.owner, "")
@@ -522,7 +527,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
 
   def summarized[T](depth: Int)(op: => T): T = {
     val saved = maxSummarized
-    maxSummarized = ctx.toTextRecursions + depth
+    maxSummarized = ctx.base.toTextRecursions + depth
     try op
     finally maxSummarized = depth
   }

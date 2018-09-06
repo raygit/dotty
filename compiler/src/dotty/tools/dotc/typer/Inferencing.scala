@@ -22,6 +22,8 @@ import reporting._
 import collection.mutable
 import config.Config
 
+import scala.annotation.internal.sharable
+
 object Inferencing {
 
   import tpd._
@@ -113,7 +115,7 @@ object Inferencing {
             val minimize =
               force.minimizeAll ||
               variance >= 0 && !(
-                force == ForceDegree.noBottom &&
+                !force.allowBottom &&
                 defn.isBottomType(ctx.typeComparer.approximation(tvar.origin, fromBelow = true)))
             if (minimize) instantiate(tvar, fromBelow = true)
             else toMaximize = true
@@ -185,6 +187,8 @@ object Inferencing {
    *
    *  Invariant refinement can be assumed if `PatternType`'s class(es) are final or
    *  case classes (because of `RefChecks#checkCaseClassInheritanceInvariant`).
+   *
+   *  TODO: Update so that GADT symbols can be variant, and we special case final class types in patterns
    */
   def constrainPatternType(tp: Type, pt: Type)(implicit ctx: Context): Boolean = {
     def refinementIsInvariant(tp: Type): Boolean = tp match {
@@ -408,7 +412,7 @@ trait Inferencing { this: Typer =>
       val resultAlreadyConstrained =
         tree.isInstanceOf[Apply] || tree.tpe.isInstanceOf[MethodOrPoly]
       if (!resultAlreadyConstrained)
-        constrainResult(tree.tpe, pt)
+        constrainResult(tree.symbol, tree.tpe, pt)
           // This is needed because it could establish singleton type upper bounds. See i2998.scala.
 
       val tp = tree.tpe.widen
@@ -462,9 +466,9 @@ trait Inferencing { this: Typer =>
 
 /** An enumeration controlling the degree of forcing in "is-dully-defined" checks. */
 @sharable object ForceDegree {
-  class Value(val appliesTo: TypeVar => Boolean, val minimizeAll: Boolean)
+  class Value(val appliesTo: TypeVar => Boolean, val minimizeAll: Boolean, val allowBottom: Boolean = true)
   val none = new Value(_ => false, minimizeAll = false)
   val all = new Value(_ => true, minimizeAll = false)
-  val noBottom = new Value(_ => true, minimizeAll = false)
+  val noBottom = new Value(_ => true, minimizeAll = false, allowBottom = false)
 }
 

@@ -369,8 +369,11 @@ object Checking {
       if (!ok && !sym.is(Synthetic))
         fail(i"modifier `$flag` is not allowed for this definition")
 
-    if (sym.is(Inline) && ((sym.is(ParamAccessor) && sym.owner.isClass) || sym.is(TermParam) && sym.owner.isClassConstructor))
-      fail(ParamsNoInline(sym.owner))
+    if (sym.is(Transparent) &&
+          (  sym.is(ParamAccessor) && sym.owner.isClass
+          || sym.is(TermParam) && !sym.owner.isRewriteMethod
+          ))
+      fail(ParamsNoTransparent(sym.owner))
 
     if (sym.is(ImplicitCommon)) {
       if (sym.owner.is(Package))
@@ -396,18 +399,20 @@ object Checking {
         fail(OnlyClassesCanHaveDeclaredButUndefinedMembers(sym))
       checkWithDeferred(Private)
       checkWithDeferred(Final)
-      checkWithDeferred(Inline)
+      checkWithDeferred(Transparent)
+      checkWithDeferred(Rewrite)
     }
     if (sym.isValueClass && sym.is(Trait) && !sym.isRefinementClass)
       fail(CannotExtendAnyVal(sym))
     checkCombination(Final, Sealed)
     checkCombination(Private, Protected)
     checkCombination(Abstract, Override)
-    checkCombination(Lazy, Inline)
-    checkCombination(Module, Inline)
-    checkCombination(Transparent, Inline)
+    checkCombination(Private, Override)
+    checkCombination(Lazy, Transparent)
+    checkCombination(Rewrite, Transparent)
     checkNoConflict(Lazy, ParamAccessor, s"parameter may not be `lazy`")
-    if (sym.is(Inline)) checkApplicable(Inline, sym.isTerm && !sym.is(Mutable | Module))
+    if (sym.is(Transparent)) checkApplicable(Transparent, sym.isTerm && !sym.is(Mutable | Module))
+    if (sym.is(Rewrite)) checkApplicable(Rewrite, sym.is(Method, butNot = Accessor))
     if (sym.is(Lazy)) checkApplicable(Lazy, !sym.is(Method | Mutable))
     if (sym.isType && !sym.is(Deferred))
       for (cls <- sym.allOverriddenSymbols.filter(_.isClass)) {
@@ -481,16 +486,17 @@ object Checking {
           }
           tp1
         case tp: ClassInfo =>
+          def transformedParent(tp: Type): Type = tp match {
+            case ref: TypeRef => ref
+            case ref: AppliedType => ref
+            case AnnotatedType(parent, annot) =>
+              AnnotatedType(transformedParent(parent), annot)
+            case _ => defn.ObjectType // can happen if class files are missing
+          }
           tp.derivedClassInfo(
             prefix = apply(tp.prefix),
             classParents =
-              tp.parents.map { p =>
-                apply(p).stripAnnots match {
-                  case ref: TypeRef => ref
-                  case ref: AppliedType => ref
-                  case _ => defn.ObjectType // can happen if class files are missing
-                }
-              }
+              tp.parents.map(p => transformedParent(apply(p)))
             )
         case _ =>
           mapOver(tp)
@@ -666,20 +672,20 @@ trait Checking {
     }
   }
 
-  /** Check that `tree` can be marked `inline` */
-  def checkInlineConformant(tree: Tree, isFinal: Boolean, what: => String)(implicit ctx: Context): Unit = {
-    // final vals can be marked inline even if they're not pure, see Typer#patchFinalVals
+  /** Check that `tree` can right hand-side or argument to `transparent` value or parameter. */
+  def checkTransparentConformant(tree: Tree, isFinal: Boolean, what: => String)(implicit ctx: Context): Unit = {
+    // final vals can be marked transparent even if they're not pure, see Typer#patchFinalVals
     val purityLevel = if (isFinal) Idempotent else Pure
-    tree.tpe match {
-      case tp: TermRef if tp.symbol.is(InlineParam) => // ok
-      case tp => tp.widenTermRefExpr match {
-        case tp: ConstantType if exprPurity(tree) >= purityLevel => // ok
-        case _ =>
-          val allow = ctx.erasedTypes || ctx.owner.ownersIterator.exists(_.isInlineableMethod)
-          if (!allow) ctx.error(em"$what must be a constant expression", tree.pos)
-      }
+    tree.tpe.widenTermRefExpr match {
+      case tp: ConstantType if exprPurity(tree) >= purityLevel => // ok
+      case _ =>
+        val allow = ctx.erasedTypes || ctx.inRewriteMethod
+        if (!allow) ctx.error(em"$what must be a constant expression", tree.pos)
     }
   }
+
+  /** A hook to exclude selected symbols from double declaration check */
+  def excludeFromDoubleDeclCheck(sym: Symbol)(implicit ctx: Context) = false
 
   /** Check that class does not declare same symbol twice */
   def checkNoDoubleDeclaration(cls: Symbol)(implicit ctx: Context): Unit = {
@@ -703,7 +709,8 @@ trait Checking {
           decl resetFlag HasDefaultParams
         }
       }
-      seen(decl.name) = decl :: seen(decl.name)
+      if (!excludeFromDoubleDeclCheck(decl))
+        seen(decl.name) = decl :: seen(decl.name)
     }
 
     cls.info.decls.foreach(checkDecl)
@@ -841,15 +848,20 @@ trait Checking {
     checker.traverse(tree)
   }
 
+  /** Check that we are in a rewrite context (inside a rewrite method or in inlined code) */
+  def checkInRewriteContext(what: String, pos: Position)(implicit ctx: Context) =
+    if (!ctx.inRewriteMethod && !ctx.isInlineContext)
+      ctx.error(em"$what can only be used in a rewrite method", pos)
+
   /** Check that all case classes that extend `scala.Enum` are `enum` cases */
-  def checkEnum(cdef: untpd.TypeDef, cls: Symbol)(implicit ctx: Context): Unit = {
+  def checkEnum(cdef: untpd.TypeDef, cls: Symbol, parent: Symbol)(implicit ctx: Context): Unit = {
     import untpd.modsDeco
     def isEnumAnonCls =
       cls.isAnonymousClass &&
       cls.owner.isTerm &&
       (cls.owner.flagsUNSAFE.is(Case) || cls.owner.name == nme.DOLLAR_NEW)
     if (!cdef.mods.isEnumCase && !isEnumAnonCls)
-      ctx.error(em"normal case $cls in ${cls.owner} cannot extend an enum", cdef.pos)
+      ctx.error(CaseClassCannotExtendEnum(cls, parent), cdef.pos)
   }
 
   /** Check that all references coming from enum cases in an enum companion object
@@ -927,7 +939,7 @@ trait Checking {
 
 trait ReChecking extends Checking {
   import tpd._
-  override def checkEnum(cdef: untpd.TypeDef, cls: Symbol)(implicit ctx: Context): Unit = ()
+  override def checkEnum(cdef: untpd.TypeDef, cls: Symbol, parent: Symbol)(implicit ctx: Context): Unit = ()
   override def checkRefsLegal(tree: tpd.Tree, badOwner: Symbol, allowed: (Name, Symbol) => Boolean, where: String)(implicit ctx: Context): Unit = ()
   override def checkEnumCompanions(stats: List[Tree], enumContexts: collection.Map[Symbol, Context])(implicit ctx: Context): List[Tree] = stats
 }
@@ -942,7 +954,7 @@ trait NoChecking extends ReChecking {
   override def checkImplicitConversionDefOK(sym: Symbol)(implicit ctx: Context): Unit = ()
   override def checkImplicitConversionUseOK(sym: Symbol, pos: Position)(implicit ctx: Context): Unit = ()
   override def checkFeasibleParent(tp: Type, pos: Position, where: => String = "")(implicit ctx: Context): Type = tp
-  override def checkInlineConformant(tree: Tree, isFinal: Boolean, what: => String)(implicit ctx: Context) = ()
+  override def checkTransparentConformant(tree: Tree, isFinal: Boolean, what: => String)(implicit ctx: Context) = ()
   override def checkNoDoubleDeclaration(cls: Symbol)(implicit ctx: Context): Unit = ()
   override def checkParentCall(call: Tree, caller: ClassSymbol)(implicit ctx: Context) = ()
   override def checkSimpleKinded(tpt: Tree)(implicit ctx: Context): Tree = tpt
@@ -952,5 +964,6 @@ trait NoChecking extends ReChecking {
   override def checkCaseInheritance(parentSym: Symbol, caseCls: ClassSymbol, pos: Position)(implicit ctx: Context) = ()
   override def checkNoForwardDependencies(vparams: List[ValDef])(implicit ctx: Context): Unit = ()
   override def checkMembersOK(tp: Type, pos: Position)(implicit ctx: Context): Type = tp
+  override def checkInRewriteContext(what: String, pos: Position)(implicit ctx: Context) = ()
   override def checkFeature(base: ClassSymbol, name: TermName, description: => String, featureUseSite: Symbol, pos: Position)(implicit ctx: Context): Unit = ()
 }

@@ -6,7 +6,7 @@ trait Test {
 
   trait TreeBuilder {
     val global: Global
-    inline def set(tree: global.Tree) = {}
+    rewrite def set(tree: global.Tree) = {}
   }
 
   val nsc: Global

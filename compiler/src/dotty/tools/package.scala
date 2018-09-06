@@ -2,9 +2,6 @@ package dotty
 import scala.annotation.Annotation
 
 package object tools {
-  class sharable extends Annotation
-  class unshared extends Annotation
-
   // Ensure this object is already classloaded, since it's only actually used
   // when handling stack overflows and every operation (including class loading)
   // risks failing.
@@ -23,4 +20,8 @@ package object tools {
       }
     case _ => ys.isEmpty
   }
+
+  /** Throws an `UnsupportedOperationException` with the given method name. */
+  def unsupported(methodName: String): Nothing =
+    throw new UnsupportedOperationException(methodName)
 }

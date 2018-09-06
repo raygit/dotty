@@ -1,5 +1,5 @@
 object Test extends App {
-  import dotty.tools.dotc.util.Lst
+  import lst.Lst
 
   val xs0: Lst[String] = Lst.Empty
   val xs1 = Lst("a")
@@ -238,7 +238,7 @@ object Test extends App {
     assert(is10.contains(5))
     assert(!is10.contains(6))
 
-    assert(!xss0.contains(List("")))
+    assert(!xss0.contains(Lst("")))
     assert(xss1.contains(Lst("a")))
     assert(xss10.contains(Lst("e")), xss10)
     assert(!xss10.contains(Lst("f")))

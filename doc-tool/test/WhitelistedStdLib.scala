@@ -4,10 +4,10 @@ package dottydoc
 import org.junit.Test
 import org.junit.Assert._
 
-class TestWhitelistedCollections extends DottyDocTest {
+class TestWhitelistedCollections extends DottyDocTest with CheckFromSource {
 
   @Test def arrayAndImmutableHasDocumentation =
-    checkFiles(TestWhitelistedCollections.files) { packages =>
+    checkFiles(TestWhitelistedCollections.files) { (ctx, packages) =>
       val array =
         packages("scala")
         .children.find(_.path.mkString(".") == "scala.Array")
@@ -32,6 +32,6 @@ class TestWhitelistedCollections extends DottyDocTest {
 
 object TestWhitelistedCollections {
   val files: List[String] =
-    StdLibSources.whitelisted
+    TestSources.stdLibWhitelisted
     .filterNot(_.endsWith("package.scala"))
 }

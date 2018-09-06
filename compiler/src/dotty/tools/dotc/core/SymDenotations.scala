@@ -24,6 +24,8 @@ import reporting.diagnostic.Message
 import reporting.diagnostic.messages.BadSymbolicReference
 import reporting.trace
 
+import scala.annotation.internal.sharable
+
 trait SymDenotations { this: Context =>
   import SymDenotations._
 
@@ -123,7 +125,7 @@ object SymDenotations {
     final val name: Name,
     initFlags: FlagSet,
     initInfo: Type,
-    initPrivateWithin: Symbol = NoSymbol) extends SingleDenotation(symbol) {
+    initPrivateWithin: Symbol = NoSymbol) extends SingleDenotation(symbol, initInfo) {
 
     //assert(symbol.id != 4940, name)
 
@@ -139,7 +141,6 @@ object SymDenotations {
     // ------ Getting and setting fields -----------------------------
 
     private[this] var myFlags: FlagSet = adaptFlags(initFlags)
-    private[this] var myInfo: Type = initInfo
     private[this] var myPrivateWithin: Symbol = initPrivateWithin
     private[this] var myAnnotations: List[Annotation] = Nil
 
@@ -201,17 +202,6 @@ object SymDenotations {
     final def is(fs: FlagConjunction, butNot: FlagSet)(implicit ctx: Context) =
       (if (isCurrent(fs) && isCurrent(butNot)) myFlags else flags) is (fs, butNot)
 
-    /** The type info.
-     *  The info is an instance of TypeType iff this is a type denotation
-     *  Uncompleted denotations set myInfo to a LazyType.
-     */
-    final def info(implicit ctx: Context): Type = {
-      def completeInfo = { // Written this way so that `info` is small enough to be inlined
-        completeFrom(myInfo.asInstanceOf[LazyType]); info
-      }
-      if (myInfo.isInstanceOf[LazyType]) completeInfo else myInfo
-    }
-
     /** The type info, or, if symbol is not yet completed, the completer */
     final def infoOrCompleter = myInfo
 
@@ -221,7 +211,7 @@ object SymDenotations {
       case _ => Some(myInfo)
     }
 
-    private def completeFrom(completer: LazyType)(implicit ctx: Context): Unit =
+    final def completeFrom(completer: LazyType)(implicit ctx: Context): Unit =
       if (Config.showCompletions) {
         println(i"${"  " * indent}completing ${if (isType) "type" else "val"} $name")
         indent += 1
@@ -419,7 +409,7 @@ object SymDenotations {
           prefix = prefix.exclude(ModuleClassName)
         def qualify(n: SimpleName) =
           kind(prefix.toTermName, if (filler.isEmpty) n else termName(filler + n))
-        val fn = name rewrite {
+        val fn = name replace {
           case name: SimpleName => qualify(name)
           case name @ AnyQualifiedName(_, _) => qualify(name.mangled.toSimpleName)
         }
@@ -600,7 +590,7 @@ object SymDenotations {
 
     /** Is this a denotation of a stable term (or an arbitrary type)? */
     final def isStable(implicit ctx: Context) =
-      isType || is(Stable) || !(is(UnstableValue) || info.isInstanceOf[ExprType])
+      isType || is(StableOrErased) || !is(UnstableValue) && !info.isInstanceOf[ExprType]
 
     /** Is this a denotation of a class that does not have - either direct or inherited -
      *  initaliazion code?
@@ -788,13 +778,27 @@ object SymDenotations {
 
     def isSkolem: Boolean = name == nme.SKOLEM
 
-    def isInlinedMethod(implicit ctx: Context): Boolean =
-      is(InlineMethod, butNot = Accessor)
-
     def isTransparentMethod(implicit ctx: Context): Boolean =
-      is(TransparentMethod, butNot = Accessor)
+      is(TransparentMethod, butNot = AccessorOrSynthetic)
 
-    def isInlineableMethod(implicit ctx: Context) = isInlinedMethod || isTransparentMethod
+    def isRewriteMethod(implicit ctx: Context): Boolean =
+      is(RewriteMethod, butNot = AccessorOrSynthetic)
+
+    /** A transparent or rewrite method */
+    def isInlineable(implicit ctx: Context): Boolean =
+      is(TransparentMethod) || is(RewriteMethod)
+
+    /** An erased value or a rewrite method, excluding @forceInline annotated methods.
+     *  The latter have to be kept around to get to parity with Scala.
+     *  This is necessary at least until we have full bootstrap. Right now
+     *  dotty-bootstrapped involves running the Dotty compiler compiled with Scala 2 with
+     *  a Dotty runtime library compiled with Dotty. If we erase @forceInline annotated
+     *  methods, this means that the support methods in dotty.runtime.LazyVals vanish.
+     *  But they are needed for running the lazy val implementations in the Scala-2 compiled compiler.
+     */
+    def isEffectivelyErased(implicit ctx: Context): Boolean =
+      is(Erased) ||
+      isRewriteMethod && unforcedAnnotation(defn.ForceInlineAnnot).isEmpty
 
     /** ()T and => T types should be treated as equivalent for this symbol.
      *  Note: For the moment, we treat Scala-2 compiled symbols as loose matching,
@@ -1077,7 +1081,7 @@ object SymDenotations {
       if (!canMatchInheritedSymbols && (owner ne inClass)) NoSymbol
       else matchingDecl(inClass, owner.thisType)
 
-    /** All symbols overriden by this denotation. */
+    /** All symbols overridden by this denotation. */
     final def allOverriddenSymbols(implicit ctx: Context): Iterator[Symbol] =
       if (!canMatchInheritedSymbols) Iterator.empty
       else overriddenFromType(owner.info)

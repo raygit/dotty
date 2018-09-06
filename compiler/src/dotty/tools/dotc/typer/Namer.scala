@@ -102,7 +102,7 @@ trait NamerContextOps { this: Context =>
   }
 
   /** A new context for the interior of a class */
-  def inClassContext(selfInfo: DotClass /* Should be Type | Symbol*/): Context = {
+  def inClassContext(selfInfo: AnyRef /* Should be Type | Symbol*/): Context = {
     val localCtx: Context = ctx.fresh.setNewScope
     selfInfo match {
       case sym: Symbol if sym.exists && sym.name != nme.WILDCARD => localCtx.scope.openForMutations.enter(sym)
@@ -754,18 +754,41 @@ class Namer { typer: Typer =>
           val ann = Annotation.deferred(cls, implicit ctx => typedAnnotation(annotTree))
           sym.addAnnotation(ann)
           if (cls == defn.ForceInlineAnnot && sym.is(Method, butNot = Accessor))
-            sym.setFlag(Inline)
+            sym.setFlag(Rewrite)
         }
       case _ =>
     }
 
     private def addInlineInfo(sym: Symbol) = original match {
-      case original: untpd.DefDef if sym.isInlineableMethod =>
-        Inliner.registerInlineInfo(
+      case original: untpd.DefDef if sym.isInlineable =>
+        PrepareInlineable.registerInlineInfo(
             sym,
+            original.rhs,
             implicit ctx => typedAheadExpr(original).asInstanceOf[tpd.DefDef].rhs
           )(localContext(sym))
       case _ =>
+    }
+
+    /** Invalidate `denot` by overwriting its info with `NoType` if
+     *  `denot` is a compiler generated case class method that clashes
+     *  with a user-defined method in the same scope with a matching type.
+     */
+    private def invalidateIfClashingSynthetic(denot: SymDenotation): Unit = {
+      def isCaseClass(owner: Symbol) =
+        owner.isClass && {
+          if (owner.is(Module)) owner.linkedClass.is(CaseClass)
+          else owner.is(CaseClass)
+        }
+      val isClashingSynthetic =
+        denot.is(Synthetic) &&
+        desugar.isRetractableCaseClassMethodName(denot.name) &&
+        isCaseClass(denot.owner) &&
+        denot.owner.info.decls.lookupAll(denot.name).exists(alt =>
+          alt != denot.symbol && alt.info.matchesLoosely(denot.info))
+      if (isClashingSynthetic) {
+        typr.println(i"invalidating clashing $denot in ${denot.owner}")
+        denot.info = NoType
+      }
     }
 
     /** Intentionally left without `implicit ctx` parameter. We need
@@ -776,6 +799,7 @@ class Namer { typer: Typer =>
       addAnnotations(sym)
       addInlineInfo(sym)
       denot.info = typeSig(sym)
+      invalidateIfClashingSynthetic(denot)
       Checking.checkWellFormed(sym)
       denot.info = avoidPrivateLeaks(sym, sym.pos)
     }
@@ -864,7 +888,7 @@ class Namer { typer: Typer =>
        * (4) If the class is sealed, it is defined in the same compilation unit as the current class
        */
       def checkedParentType(parent: untpd.Tree): Type = {
-        val ptype = parentType(parent)(ctx.superCallContext).dealias
+        val ptype = parentType(parent)(ctx.superCallContext).dealiasKeepAnnots
         if (cls.isRefinementClass) ptype
         else {
           val pt = checkClassType(ptype, parent.pos,
@@ -1037,7 +1061,7 @@ class Namer { typer: Typer =>
               ctx.defContext(sym).denotNamed(original)
           def paramProto(paramss: List[List[Type]], idx: Int): Type = paramss match {
             case params :: paramss1 =>
-              if (idx < params.length) wildApprox(params(idx), null, Set.empty)
+              if (idx < params.length) wildApprox(params(idx))
               else paramProto(paramss1, idx - params.length)
             case nil =>
               WildcardType
@@ -1051,13 +1075,13 @@ class Namer { typer: Typer =>
 
       // println(s"final inherited for $sym: ${inherited.toString}") !!!
       // println(s"owner = ${sym.owner}, decls = ${sym.owner.info.decls.show}")
-      def isInline = sym.is(FinalOrInlineOrTransparent, butNot = Method | Mutable)
+      def isTransparentVal = sym.is(FinalOrTransparent, butNot = Method | Mutable)
 
       // Widen rhs type and eliminate `|' but keep ConstantTypes if
       // definition is inline (i.e. final in Scala2) and keep module singleton types
       // instead of widening to the underlying module class types.
       def widenRhs(tp: Type): Type = tp.widenTermRefExpr match {
-        case ctp: ConstantType if isInline => ctp
+        case ctp: ConstantType if isTransparentVal => ctp
         case ref: TypeRef if ref.symbol.is(ModuleClass) => tp
         case _ => tp.widen.widenUnion
       }
@@ -1066,7 +1090,8 @@ class Namer { typer: Typer =>
       // it would be erased to BoxedUnit.
       def dealiasIfUnit(tp: Type) = if (tp.isRef(defn.UnitClass)) defn.UnitType else tp
 
-      val rhsCtx = ctx.addMode(Mode.InferringReturnType)
+      var rhsCtx = ctx.addMode(Mode.InferringReturnType)
+      if (sym.isInlineable) rhsCtx = rhsCtx.addMode(Mode.InlineableBody)
       def rhsType = typedAheadExpr(mdef.rhs, inherited orElse rhsProto)(rhsCtx).tpe
 
       // Approximate a type `tp` with a type that does not contain skolem types.
@@ -1086,7 +1111,7 @@ class Namer { typer: Typer =>
         if (sym.is(Final, butNot = Method)) {
           val tp = lhsType
           if (tp.isInstanceOf[ConstantType])
-            tp // keep constant types that fill in for a non-constant (to be revised when inline has landed).
+            tp // keep constant types that fill in for a non-constant (to be revised when transparent has landed).
           else inherited
         }
         else inherited
@@ -1125,13 +1150,14 @@ class Namer { typer: Typer =>
       case _ =>
         WildcardType
     }
-    paramFn(typedAheadType(mdef.tpt, tptProto).tpe)
+    paramFn(checkSimpleKinded(typedAheadType(mdef.tpt, tptProto)).tpe)
   }
 
   /** The type signature of a DefDef with given symbol */
   def defDefSig(ddef: DefDef, sym: Symbol)(implicit ctx: Context) = {
-    val DefDef(name, tparams, vparamss, _, _) = ddef
-    val isConstructor = name == nme.CONSTRUCTOR
+    // Beware: ddef.name need not match sym.name if sym was freshened!
+    val DefDef(_, tparams, vparamss, _, _) = ddef
+    val isConstructor = sym.name == nme.CONSTRUCTOR
 
     // The following 3 lines replace what was previously just completeParams(tparams).
     // But that can cause bad bounds being computed, as witnessed by

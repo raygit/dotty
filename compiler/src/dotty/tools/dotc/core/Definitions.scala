@@ -188,19 +188,19 @@ class Definitions {
   }
 
   lazy val RootClass: ClassSymbol = ctx.newPackageSymbol(
-    NoSymbol, nme.ROOT, (root, rootcls) => ctx.rootLoader(root)).moduleClass.asClass
+    NoSymbol, nme.ROOT, (root, rootcls) => ctx.base.rootLoader(root)).moduleClass.asClass
   lazy val RootPackage: TermSymbol = ctx.newSymbol(
     NoSymbol, nme.ROOTPKG, PackageCreationFlags, TypeRef(NoPrefix, RootClass))
 
   lazy val EmptyPackageVal = ctx.newPackageSymbol(
-    RootClass, nme.EMPTY_PACKAGE, (emptypkg, emptycls) => ctx.rootLoader(emptypkg)).entered
+    RootClass, nme.EMPTY_PACKAGE, (emptypkg, emptycls) => ctx.base.rootLoader(emptypkg)).entered
   lazy val EmptyPackageClass = EmptyPackageVal.moduleClass.asClass
 
   /** A package in which we can place all methods that are interpreted specially by the compiler */
   lazy val OpsPackageVal = ctx.newCompletePackageSymbol(RootClass, nme.OPS_PACKAGE).entered
   lazy val OpsPackageClass = OpsPackageVal.moduleClass.asClass
 
-  lazy val ScalaPackageVal = ctx.requiredPackage("scala")
+  lazy val ScalaPackageVal = ctx.requiredPackage(nme.scala_)
   lazy val ScalaMathPackageVal = ctx.requiredPackage("scala.math")
   lazy val ScalaPackageClass = {
     val cls = ScalaPackageVal.moduleClass.asClass
@@ -211,8 +211,8 @@ class Definitions {
     cls
   }
   lazy val ScalaPackageObjectRef = ctx.requiredModuleRef("scala.package")
-  lazy val JavaPackageVal = ctx.requiredPackage("java")
-  lazy val JavaLangPackageVal = ctx.requiredPackage("java.lang")
+  lazy val JavaPackageVal = ctx.requiredPackage(nme.java)
+  lazy val JavaLangPackageVal = ctx.requiredPackage(jnme.JavaLang)
   // fundamental modules
   lazy val SysPackage = ctx.requiredModule("scala.sys.package")
     lazy val Sys_errorR = SysPackage.moduleClass.requiredMethodRef(nme.error)
@@ -333,16 +333,20 @@ class Definitions {
   def NullType = NullClass.typeRef
   lazy val RuntimeNullModuleRef = ctx.requiredModuleRef("scala.runtime.Null")
 
+  lazy val ImplicitScrutineeTypeSym =
+    newSymbol(ScalaPackageClass, tpnme.IMPLICITkw, EmptyFlags, TypeBounds.empty).entered
+  def ImplicitScrutineeTypeRef: TypeRef = ImplicitScrutineeTypeSym.typeRef
+
   lazy val ScalaPredefModuleRef = ctx.requiredModuleRef("scala.Predef")
   def ScalaPredefModule(implicit ctx: Context) = ScalaPredefModuleRef.symbol
 
     lazy val Predef_ConformsR = ScalaPredefModule.requiredClass("<:<").typeRef
     def Predef_Conforms(implicit ctx: Context) = Predef_ConformsR.symbol
-    lazy val Predef_conformsR = ScalaPredefModule.requiredMethodRef("$conforms")
+    lazy val Predef_conformsR = ScalaPredefModule.requiredMethodRef(nme.conforms_)
     def Predef_conforms(implicit ctx: Context) = Predef_conformsR.symbol
-    lazy val Predef_classOfR = ScalaPredefModule.requiredMethodRef("classOf")
+    lazy val Predef_classOfR = ScalaPredefModule.requiredMethodRef(nme.classOf)
     def Predef_classOf(implicit ctx: Context) = Predef_classOfR.symbol
-    lazy val Predef_undefinedR = ScalaPredefModule.requiredMethodRef("???")
+    lazy val Predef_undefinedR = ScalaPredefModule.requiredMethodRef(nme.???)
     def Predef_undefined(implicit ctx: Context) = Predef_undefinedR.symbol
 
   lazy val ScalaRuntimeModuleRef = ctx.requiredModuleRef("scala.runtime.ScalaRunTime")
@@ -682,8 +686,11 @@ class Definitions {
   def Unpickler_liftedExpr = ctx.requiredMethod("scala.runtime.quoted.Unpickler.liftedExpr")
   def Unpickler_unpickleType = ctx.requiredMethod("scala.runtime.quoted.Unpickler.unpickleType")
 
-  lazy val TastyTopLevelSpliceModule = ctx.requiredModule("scala.tasty.TopLevelSplice")
-    lazy val TastyTopLevelSplice_compilationTopLevelSplice = TastyTopLevelSpliceModule.requiredMethod("tastyContext")
+  lazy val TastyTastyType = ctx.requiredClassRef("scala.tasty.Tasty")
+  def TastyTastyClass(implicit ctx: Context) = TastyTastyType.symbol.asClass
+
+  lazy val TastyTastyModule = ctx.requiredModule("scala.tasty.Tasty")
+    lazy val TastyTasty_macroContext = TastyTastyModule.requiredMethod("macroContext")
 
   lazy val EqType = ctx.requiredClassRef("scala.Eq")
   def EqClass(implicit ctx: Context) = EqType.symbol.asClass
@@ -730,8 +737,8 @@ class Definitions {
   def ImplicitNotFoundAnnot(implicit ctx: Context) = ImplicitNotFoundAnnotType.symbol.asClass
   lazy val ForceInlineAnnotType = ctx.requiredClassRef("scala.forceInline")
   def ForceInlineAnnot(implicit ctx: Context) = ForceInlineAnnotType.symbol.asClass
-  lazy val InlineParamAnnotType = ctx.requiredClassRef("scala.annotation.internal.InlineParam")
-  def InlineParamAnnot(implicit ctx: Context) = InlineParamAnnotType.symbol.asClass
+  lazy val TransparentParamAnnotType = ctx.requiredClassRef("scala.annotation.internal.TransparentParam")
+  def TransparentParamAnnot(implicit ctx: Context) = TransparentParamAnnotType.symbol.asClass
   lazy val InvariantBetweenAnnotType = ctx.requiredClassRef("scala.annotation.internal.InvariantBetween")
   def InvariantBetweenAnnot(implicit ctx: Context) = InvariantBetweenAnnotType.symbol.asClass
   lazy val MigrationAnnotType = ctx.requiredClassRef("scala.annotation.migration")
@@ -1213,7 +1220,7 @@ class Definitions {
 
   /** Lists core methods that don't have underlying bytecode, but are synthesized on-the-fly in every reflection universe */
   lazy val syntheticCoreMethods =
-    AnyMethods ++ ObjectMethods ++ List(String_+, throwMethod)
+    AnyMethods ++ ObjectMethods ++ List(String_+, throwMethod, ImplicitScrutineeTypeSym)
 
   lazy val reservedScalaClassNames: Set[Name] = syntheticScalaClasses.map(_.name).toSet
 
@@ -1229,7 +1236,7 @@ class Definitions {
       // Temporary measure, as long as we do not read these classes from Tasty.
       // Scala-2 classes don't have NoInits set even if they are pure. We override this
       // for Product and Serializable so that case classes can be pure. A full solution
-      // requiers that we read all Scala code from Tasty.
+      // requires that we read all Scala code from Tasty.
       ProductClass.setFlag(NoInits)
       SerializableClass.setFlag(NoInits)
 

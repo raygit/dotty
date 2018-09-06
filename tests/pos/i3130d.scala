@@ -1,6 +1,6 @@
 class D(x: Int) {
   class DD {
-    inline def apply() = new DD()
+    rewrite def apply() = new DD()
   }
   val inner = new DD
 }

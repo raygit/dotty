@@ -49,7 +49,7 @@ class TastyPrinter(bytes: Array[Byte])(implicit ctx: Context) {
       def printNat() = print(Yellow(" " + readNat()).show)
       def printName() = {
         val idx = readNat()
-        print(nameColor(" " + idx + " [" + nameRefToString(NameRef(idx)) + "]").show)
+        print(nameColor(" " + idx + " [" + nameRefToString(NameRef(idx)) + "]"))
       }
       def printTree(): Unit = {
         newLine()
@@ -64,7 +64,7 @@ class TastyPrinter(bytes: Array[Byte])(implicit ctx: Context) {
           tag match {
             case RENAMED =>
               printName(); printName()
-            case VALDEF | DEFDEF | TYPEDEF | TYPEPARAM | PARAM | NAMEDARG | BIND =>
+            case VALDEF | DEFDEF | TYPEDEF | OBJECTDEF | TYPEPARAM | PARAM | NAMEDARG | BIND =>
               printName(); printTrees()
             case REFINEDtype | TERMREFin | TYPEREFin =>
               printName(); printTree(); printTrees()

@@ -1,11 +1,11 @@
 class Test {
 
-  inline def foo: Unit = {
+  rewrite def foo: Unit = {
     def it = new {}
     (_: Any) => it
   }
 
-  inline private def bar: Unit = {
+  rewrite private def bar: Unit = {
     def it = new {}
     (_: Any) => it
   }

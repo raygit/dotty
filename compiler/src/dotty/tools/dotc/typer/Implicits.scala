@@ -37,6 +37,8 @@ import config.Printers.{implicits, implicitsDetailed, typr}
 import collection.mutable
 import reporting.trace
 
+import scala.annotation.internal.sharable
+
 /** Implicit resolution */
 object Implicits {
   import tpd._
@@ -99,9 +101,9 @@ object Implicits {
                 mt.isImplicitMethod ||
                 mt.paramInfos.length != 1 ||
                 !ctx.test(implicit ctx =>
-                  argType relaxed_<:< wildApprox(widenSingleton(mt.paramInfos.head), null, Set.empty))
+                  argType relaxed_<:< wildApprox(widenSingleton(mt.paramInfos.head)))
               case rtp =>
-                discardForView(wildApprox(rtp, null, Set.empty), argType)
+                discardForView(wildApprox(rtp), argType)
             }
           case tpw: TermRef =>
             false // can't discard overloaded refs
@@ -550,6 +552,7 @@ trait Implicits { self: Typer =>
         || (from.tpe isRef defn.NothingClass)
         || (from.tpe isRef defn.NullClass)
         || !(ctx.mode is Mode.ImplicitsEnabled)
+        || from.isInstanceOf[Super]
         || (from.tpe eq NoPrefix)) NoMatchingImplicitsFailure
     else {
       def adjust(to: Type) = to.stripTypeVar.widenExpr match {
@@ -618,9 +621,15 @@ trait Implicits { self: Typer =>
         val tag = bindFreeVars(arg)
         if (bindFreeVars.ok) ref(defn.QuotedType_apply).appliedToType(tag)
         else EmptyTree
+      case arg :: Nil if ctx.inRewriteMethod =>
+        ref(defn.QuotedType_apply).appliedToType(arg)
       case _ =>
         EmptyTree
     }
+
+    def synthesizedTastyContext(formal: Type): Tree =
+      if (ctx.inRewriteMethod || enclosingInlineds.nonEmpty) ref(defn.TastyTasty_macroContext)
+      else EmptyTree
 
     /** If `formal` is of the form Eq[T, U], where no `Eq` instance exists for
      *  either `T` or `U`, synthesize `Eq.eqAny[T, U]` as solution.
@@ -692,7 +701,8 @@ trait Implicits { self: Typer =>
         else
           trySpecialCase(defn.ClassTagClass, synthesizedClassTag,
             trySpecialCase(defn.QuotedTypeClass, synthesizedTypeTag,
-              trySpecialCase(defn.EqClass, synthesizedEq, failed)))
+              trySpecialCase(defn.TastyTastyClass, synthesizedTastyContext,
+                trySpecialCase(defn.EqClass, synthesizedEq, failed))))
     }
   }
 
@@ -845,7 +855,15 @@ trait Implicits { self: Typer =>
       else i"type error: ${argument.tpe} does not conform to $pt${err.whyNoMatchStr(argument.tpe, pt)}")
     trace(s"search implicit ${pt.show}, arg = ${argument.show}: ${argument.tpe.show}", implicits, show = true) {
       assert(!pt.isInstanceOf[ExprType])
-      val result = new ImplicitSearch(pt, argument, pos).bestImplicit(contextual = true)
+      val result =
+        try {
+          new ImplicitSearch(pt, argument, pos).bestImplicit(contextual = true)
+        } catch {
+          case ce: CyclicReference =>
+            ce.inImplicitSearch = true
+            throw ce
+        }
+
       result match {
         case result: SearchSuccess =>
           result.tstate.commit()
@@ -895,12 +913,12 @@ trait Implicits { self: Typer =>
 
     lazy val funProto = fullProto match {
       case proto: ViewProto =>
-        FunProto(untpd.TypedSplice(dummyTreeOfType(proto.argType)) :: Nil, proto.resultType, self)
+        FunProto(untpd.TypedSplice(dummyTreeOfType(proto.argType)) :: Nil, proto.resultType)(self)
       case proto => proto
     }
 
     /** The expected type where parameters and uninstantiated typevars are replaced by wildcard types */
-    val wildProto = implicitProto(pt, wildApprox(_, null, Set.empty))
+    val wildProto = implicitProto(pt, wildApprox(_))
 
     val isNot = wildProto.classSymbol == defn.NotClass
 
@@ -1023,7 +1041,7 @@ trait Implicits { self: Typer =>
        *   - otherwise, if a previous search was also successful, handle the ambiguity
        *     in `disambiguate`,
        *   - otherwise, continue the search with all candidates that are not strictly
-       *     worse than the succesful candidate.
+       *     worse than the successful candidate.
        *  If a trial failed:
        *    - if the query term is a `Not[T]` treat it as a success,
        *    - otherwise, if the failure is an ambiguity, try to heal it (see @healAmbiguous)
@@ -1132,19 +1150,24 @@ trait Implicits { self: Typer =>
       val eligible =
         if (contextual) ctx.implicits.eligible(wildProto)
         else implicitScope(wildProto).eligible
-      searchImplicits(eligible, contextual).recoverWith {
-        failure => failure.reason match {
-          case _: AmbiguousImplicits => failure
-          case reason =>
-            if (contextual)
-              bestImplicit(contextual = false).recoverWith {
-                failure2 => reason match {
-                  case (_: DivergingImplicit) | (_: ShadowedImplicit) => failure
-                  case _ => failure2
+      searchImplicits(eligible, contextual) match {
+        case result: SearchSuccess =>
+          if (contextual && ctx.mode.is(Mode.InlineableBody))
+            PrepareInlineable.markContextualImplicit(result.tree)
+          result
+        case failure: SearchFailure =>
+          failure.reason match {
+            case _: AmbiguousImplicits => failure
+            case reason =>
+              if (contextual)
+                bestImplicit(contextual = false).recoverWith {
+                  failure2 => reason match {
+                    case (_: DivergingImplicit) | (_: ShadowedImplicit) => failure
+                    case _ => failure2
+                  }
                 }
-              }
-            else failure
-        }
+              else failure
+          }
       }
     }
 

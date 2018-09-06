@@ -1260,46 +1260,50 @@ object messages {
            |""".stripMargin
   }
 
-  case class OverloadedOrRecursiveMethodNeedsResultType(tree: Names.TermName)(implicit ctx: Context)
+  case class OverloadedOrRecursiveMethodNeedsResultType(cycleSym: Symbol)(implicit ctx: Context)
   extends Message(OverloadedOrRecursiveMethodNeedsResultTypeID) {
-    val kind = "Syntax"
-    val msg = hl"""overloaded or recursive method ${tree} needs return type"""
+    val kind = "Cyclic"
+    val msg = hl"""overloaded or recursive $cycleSym needs return type"""
     val explanation =
-      hl"""Case 1: ${tree} is overloaded
-          |If there are multiple methods named `${tree.name}` and at least one definition of
+      hl"""Case 1: $cycleSym is overloaded
+          |If there are multiple methods named `$cycleSym` and at least one definition of
           |it calls another, you need to specify the calling method's return type.
           |
-          |Case 2: ${tree} is recursive
-          |If `${tree.name}` calls itself on any path, you need to specify its return type.
+          |Case 2: $cycleSym is recursive
+          |If `$cycleSym` calls itself on any path (even through mutual recursion), you need to specify the return type
+          |of `$cycleSym` or of a definition it's mutually recursive with.
           |""".stripMargin
   }
 
-  case class RecursiveValueNeedsResultType(tree: Names.TermName)(implicit ctx: Context)
+  case class RecursiveValueNeedsResultType(cycleSym: Symbol)(implicit ctx: Context)
   extends Message(RecursiveValueNeedsResultTypeID) {
-    val kind = "Syntax"
-    val msg = hl"""recursive value ${tree.name} needs type"""
+    val kind = "Cyclic"
+    val msg = hl"""recursive $cycleSym needs type"""
     val explanation =
-      hl"""The definition of `${tree.name}` is recursive and you need to specify its type.
+      hl"""The definition of `$cycleSym` is recursive and you need to specify its type.
           |""".stripMargin
   }
 
   case class CyclicReferenceInvolving(denot: SymDenotation)(implicit ctx: Context)
   extends Message(CyclicReferenceInvolvingID) {
-    val kind = "Syntax"
+    val kind = "Cyclic"
     val msg = hl"""cyclic reference involving $denot"""
     val explanation =
       hl"""|$denot is declared as part of a cycle which makes it impossible for the
            |compiler to decide upon ${denot.name}'s type.
+           |To avoid this error, try giving `${denot.name}` an explicit type.
            |""".stripMargin
   }
 
   case class CyclicReferenceInvolvingImplicit(cycleSym: Symbol)(implicit ctx: Context)
   extends Message(CyclicReferenceInvolvingImplicitID) {
-    val kind = "Syntax"
+    val kind = "Cyclic"
     val msg = hl"""cyclic reference involving implicit $cycleSym"""
     val explanation =
-      hl"""|This happens when the right hand-side of $cycleSym's definition involves an implicit search.
-           |To avoid this error, give `${cycleSym.name}` an explicit type.
+      hl"""|$cycleSym is declared as part of a cycle which makes it impossible for the
+           |compiler to decide upon ${cycleSym.name}'s type.
+           |This might happen when the right hand-side of $cycleSym's definition involves an implicit search.
+           |To avoid this error, try giving `${cycleSym.name}` an explicit type.
            |""".stripMargin
   }
 
@@ -1692,10 +1696,10 @@ object messages {
     val explanation = ""
   }
 
-  case class SuperCallsNotAllowedInline(symbol: Symbol)(implicit ctx: Context)
-    extends Message(SuperCallsNotAllowedInlineID) {
+  case class SuperCallsNotAllowedInlineable(symbol: Symbol)(implicit ctx: Context)
+    extends Message(SuperCallsNotAllowedInlineableID) {
     val kind = "Syntax"
-    val msg = s"super call not allowed in inline $symbol"
+    val msg = s"super call not allowed in inlineable $symbol"
     val explanation = "Method inlining prohibits calling superclass methods, as it may lead to confusion about which super is being called."
   }
 
@@ -1743,12 +1747,12 @@ object messages {
       hl"you have to provide either ${"class"}, ${"trait"}, ${"object"}, or ${"enum"} definitions after qualifiers"
   }
 
-  case class NoReturnFromInline(owner: Symbol)(implicit ctx: Context)
-    extends Message(NoReturnFromInlineID) {
+  case class NoReturnFromInlineable(owner: Symbol)(implicit ctx: Context)
+    extends Message(NoReturnFromInlineableID) {
     val kind = "Syntax"
-    val msg = hl"no explicit ${"return"} allowed from inline $owner"
+    val msg = hl"no explicit ${"return"} allowed from inlineable $owner"
     val explanation =
-      hl"""Methods marked with ${"inline"} modifier may not use ${"return"} statements.
+      hl"""Methods marked with ${"rewrite"} or  ${"transparent"} modifier may not use ${"return"} statements.
           |Instead, you should rely on the last expression's value being
           |returned from a method.
           |"""
@@ -1821,7 +1825,7 @@ object messages {
     val kind = "Compatibility"
     val msg = "Failure to eliminate existential type. Proceed at own risk."
     val explanation = {
-      val originalType = ctx.dclsText(boundSyms, "; ").show
+      val originalType = ctx.printer.dclsText(boundSyms, "; ").show
       hl"""original type    : $tp forSome ${originalType}
           |reduces to       : $tp1
           |type used instead: $tp2"""
@@ -1961,7 +1965,7 @@ object messages {
 
     val msg = {
       val denotationOwner = denot.owner
-      val denotationName = ctx.fresh.setSetting(ctx.settings.YdebugNames, true).nameString(denot.name)
+      val denotationName = ctx.fresh.setSetting(ctx.settings.YdebugNames, true).printer.nameString(denot.name)
       val file = denot.symbol.associatedFile
       val (location, src) =
         if (file != null) (s" in $file", file.toString)
@@ -2054,10 +2058,10 @@ object messages {
           |polymorphic methods."""
   }
 
-  case class ParamsNoInline(owner: Symbol)(implicit ctx: Context)
-    extends Message(ParamsNoInlineID) {
+  case class ParamsNoTransparent(owner: Symbol)(implicit ctx: Context)
+    extends Message(ParamsNoTransparentID) {
     val kind = "Syntax"
-    val msg = hl"""${"inline"} modifier cannot be used for a ${owner.showKind} parameter"""
+    val msg = hl"""${"transparent"} modifier can only be used for parameters of rewrite methods"""
     val explanation = ""
   }
 
@@ -2104,5 +2108,22 @@ object messages {
       s"The highlighted type test will always succeed since the scrutinee type ($foundCls)" + addendum
     }
     val explanation = ""
+  }
+
+  // Relative of CyclicReferenceInvolvingImplicit and RecursiveValueNeedsResultType
+  case class TermMemberNeedsResultTypeForImplicitSearch(cycleSym: Symbol)(implicit ctx: Context)
+    extends Message(TermMemberNeedsNeedsResultTypeForImplicitSearchID) {
+    val kind = "Cyclic"
+    val msg = hl"""$cycleSym needs result type because its right-hand side attempts implicit search"""
+    val explanation =
+      hl"""|The right hand-side of $cycleSym's definition requires an implicit search at the highlighted position.
+           |To avoid this error, give `$cycleSym` an explicit type.
+           |""".stripMargin
+  }
+
+  case class CaseClassCannotExtendEnum(cls: Symbol, parent: Symbol)(implicit ctx: Context) extends Message(CaseClassCannotExtendEnumID) {
+    override def kind: String = "Syntax"
+    override def msg: String = hl"""normal case class cannot extend an enum. case $cls in ${cls.owner} is extending enum ${parent.name}."""
+    override def explanation: String = ""
   }
 }

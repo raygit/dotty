@@ -52,7 +52,6 @@ class Compiler {
   /** Phases dealing with TASTY tree pickling and unpickling */
   protected def picklerPhases: List[List[Phase]] =
     List(new Pickler) ::            // Generate TASTY info
-    List(new LinkAll) ::            // Reload compilation units from TASTY for library code (if needed)
     List(new ReifyQuotes) ::        // Turn quoted trees into explicit run-time data structures
     Nil
 
@@ -60,10 +59,10 @@ class Compiler {
   protected def transformPhases: List[List[Phase]] =
     List(new FirstTransform,         // Some transformations to put trees into a canonical form
          new CheckReentrant,         // Internal use only: Check that compiled program has no data races involving global vars
-         new ElimPackagePrefixes) :: // Eliminate references to package prefixes in Select nodes
+         new ElimPackagePrefixes,    // Eliminate references to package prefixes in Select nodes
+         new CookComments) ::        // Cook the comments: expand variables, doc, etc.
     List(new CheckStatic,            // Check restrictions that apply to @static members
          new ElimRepeated,           // Rewrite vararg parameters and arguments
-         new NormalizeFlags,         // Rewrite some definition flags
          new ExpandSAMs,             // Expand single abstract method closures to anonymous classes
          new ProtectedAccessors,     // Add accessors for protected members
          new ExtensionMethods,       // Expand methods of value classes with extension methods
@@ -81,8 +80,7 @@ class Compiler {
          new StringInterpolatorOpt,  // Optimizes raw and s string interpolators by rewriting them to string concatentations
          new CrossCastAnd,           // Normalize selections involving intersection types.
          new Splitter) ::            // Expand selections involving union types into conditionals
-    List(new ErasedDecls,            // Removes all erased defs and vals decls (except for parameters)
-         new IsInstanceOfChecker,    // check runtime realisability for `isInstanceOf`
+    List(new PruneErasedDefs,        // Drop erased definitions from scopes and simplify erased expressions
          new VCInlineMethods,        // Inlines calls to value class methods
          new SeqLiterals,            // Express vararg arguments as arrays
          new InterceptedMethods,     // Special handling of `==`, `|=`, `getClass` methods
@@ -114,13 +112,12 @@ class Compiler {
     List(new Flatten,                // Lift all inner classes to package scope
          new RenameLifted,           // Renames lifted classes to local numbering scheme
          new TransformWildcards,     // Replace wildcards with default values
-         new MoveStatics,            // Move static methods to companion classes
+         new MoveStatics,            // Move static methods from companion to the class itself
          new ExpandPrivate,          // Widen private definitions accessed from nested classes
          new RestoreScopes,          // Repair scopes rendered invalid by moving definitions in prior phases of the group
          new SelectStatic,           // get rid of selects that would be compiled into GetStatic
          new CollectEntryPoints,     // Find classes with main methods
          new CollectSuperCalls,      // Find classes that are called with super
-         new DropInlined,            // Drop Inlined nodes, since backend has no use for them
          new LabelDefs) ::           // Converts calls to labels to jumps
     Nil
 

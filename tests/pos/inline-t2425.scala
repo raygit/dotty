@@ -1,5 +1,5 @@
 object Test extends App {
-  inline def foo[T](bar: T) = {
+  rewrite def foo[T](bar: T) = {
     bar match {
       case _ => ()
     }

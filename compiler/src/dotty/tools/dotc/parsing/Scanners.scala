@@ -13,7 +13,7 @@ import scala.annotation.{ switch, tailrec }
 import scala.collection.mutable
 import scala.collection.immutable.SortedMap
 import mutable.ListBuffer
-import rewrite.Rewrites.patch
+import rewrites.Rewrites.patch
 
 object Scanners {
 
@@ -57,6 +57,7 @@ object Scanners {
 
   abstract class ScannerCommon(source: SourceFile)(implicit ctx: Context) extends CharArrayReader with TokenData {
     val buf = source.content
+    def nextToken(): Unit
 
     // Errors -----------------------------------------------------------------
 
@@ -198,7 +199,9 @@ object Scanners {
 
     private def handleMigration(keyword: Token): Token =
       if (!isScala2Mode) keyword
-      else if (keyword == INLINE) treatAsIdent()
+      else if (  keyword == ENUM
+              || keyword == ERASED
+              || keyword == TRANSPARENT) treatAsIdent()
       else keyword
 
 

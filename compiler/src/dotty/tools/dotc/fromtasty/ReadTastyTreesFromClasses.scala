@@ -33,7 +33,7 @@ class ReadTastyTreesFromClasses extends FrontEnd {
       }
 
       def alreadyLoaded(): None.type = {
-        ctx.warning(s"sclass $className cannot be unpickled because it is already loaded")
+        ctx.warning(s"class $className cannot be unpickled because it is already loaded")
         None
       }
 
@@ -60,7 +60,7 @@ class ReadTastyTreesFromClasses extends FrontEnd {
       // Note that if both the class and the object are present, then loading the class will also load
       // the object, this is why we use orElse here, otherwise we could load the object twice and
       // create ambiguities!
-      ctx.staticRef(className) match {
+      ctx.base.staticRef(className) match {
         case clsd: ClassDenotation =>
           clsd.infoOrCompleter match {
             case info: ClassfileLoader =>
@@ -72,5 +72,7 @@ class ReadTastyTreesFromClasses extends FrontEnd {
         case _ =>
           cannotUnpickle(s"no class file was found")
       }
+    case unit =>
+     Some(unit)
   }
 }

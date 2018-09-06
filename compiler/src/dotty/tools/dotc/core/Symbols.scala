@@ -31,6 +31,7 @@ import io.AbstractFile
 import language.implicitConversions
 import util.{NoSource, DotClass, Property}
 import scala.collection.JavaConverters._
+import scala.annotation.internal.sharable
 import config.Printers.typr
 
 /** Creation methods for symbols */
@@ -397,6 +398,8 @@ trait Symbols { this: Context =>
 
   def requiredMethod(path: PreName): TermSymbol =
     base.staticRef(path.toTermName).requiredSymbol(_ is Method).asTerm
+
+  def requiredMethodRef(path: PreName): TermRef = requiredMethod(path).termRef
 }
 
 object Symbols {
@@ -544,9 +547,27 @@ object Symbols {
           if (this is Module) this.moduleClass.validFor |= InitialPeriod
         }
         else this.owner.asClass.ensureFreshScopeAfter(phase)
-        if (!isPrivate)
-          assert(phase.changesMembers, i"$this entered in ${this.owner} at undeclared phase $phase")
+        assert(isPrivate || phase.changesMembers, i"$this entered in ${this.owner} at undeclared phase $phase")
         entered
+      }
+
+    /** Remove symbol from scope of owning class */
+    final def drop()(implicit ctx: Context): Unit = {
+      this.owner.asClass.delete(this)
+      if (this is Module) this.owner.asClass.delete(this.moduleClass)
+    }
+
+    /** Remove symbol from scope of owning class after given `phase`. Create a fresh
+     *  denotation for its owner class if the class has not yet already one that starts being valid after `phase`.
+     *  @pre  Symbol is a class member
+     */
+    def dropAfter(phase: DenotTransformer)(implicit ctx: Context): Unit =
+      if (ctx.phaseId != phase.next.id) dropAfter(phase)(ctx.withPhase(phase.next))
+      else {
+        assert (!this.owner.is(Package))
+        this.owner.asClass.ensureFreshScopeAfter(phase)
+        assert(isPrivate || phase.changesMembers, i"$this deleted in ${this.owner} at undeclared phase $phase")
+        drop()
       }
 
     /** This symbol, if it exists, otherwise the result of evaluating `that` */
@@ -625,12 +646,12 @@ object Symbols {
 
     def toText(printer: Printer): Text = printer.toText(this)
 
-    def showLocated(implicit ctx: Context): String = ctx.locatedText(this).show
-    def showExtendedLocation(implicit ctx: Context): String = ctx.extendedLocationText(this).show
-    def showDcl(implicit ctx: Context): String = ctx.dclText(this).show
-    def showKind(implicit ctx: Context): String = ctx.kindString(this)
-    def showName(implicit ctx: Context): String = ctx.nameString(this)
-    def showFullName(implicit ctx: Context): String = ctx.fullNameString(this)
+    def showLocated(implicit ctx: Context): String = ctx.printer.locatedText(this).show
+    def showExtendedLocation(implicit ctx: Context): String = ctx.printer.extendedLocationText(this).show
+    def showDcl(implicit ctx: Context): String = ctx.printer.dclText(this).show
+    def showKind(implicit ctx: Context): String = ctx.printer.kindString(this)
+    def showName(implicit ctx: Context): String = ctx.printer.nameString(this)
+    def showFullName(implicit ctx: Context): String = ctx.printer.fullNameString(this)
 
     override def hashCode() = id // for debugging.
   }
@@ -647,10 +668,8 @@ object Symbols {
 
     private[this] var myTree: TreeOrProvider = tpd.EmptyTree
 
-    /** If this is either:
-      *   - a top-level class and `-Yretain-trees` is set
-      *   - a top-level class loaded from TASTY and `-tasty` or `-Xlink` is set
-      * then return the TypeDef tree (possibly wrapped inside PackageDefs) for this class, otherwise EmptyTree.
+    /** If this is a top-level class and `-Yretain-trees` (or `-from-tasty`) is set.
+      * Returns the TypeDef tree (possibly wrapped inside PackageDefs) for this class, otherwise EmptyTree.
       * This will force the info of the class.
       */
     def tree(implicit ctx: Context): Tree = treeContaining("")
@@ -708,11 +727,6 @@ object Symbols {
       denot.asInstanceOf[ClassDenotation]
 
     override protected def prefixString = "ClassSymbol"
-  }
-
-  class ErrorSymbol(val underlying: Symbol, msg: => String)(implicit ctx: Context) extends Symbol(NoCoord, ctx.nextId) {
-    type ThisName = underlying.ThisName
-    denot = underlying.denot
   }
 
   @sharable object NoSymbol extends Symbol(NoCoord, 0) {

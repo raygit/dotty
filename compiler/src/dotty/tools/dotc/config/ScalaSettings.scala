@@ -5,7 +5,7 @@ import java.io.File
 import dotty.tools.io.{ Directory, PlainDirectory }
 
 import PathResolver.Defaults
-import rewrite.Rewrites
+import rewrites.Rewrites
 
 class ScalaSettings extends Settings.SettingGroup {
 
@@ -43,7 +43,7 @@ class ScalaSettings extends Settings.SettingGroup {
   val pageWidth = IntSetting("-pagewidth", "Set page width", 80)
   val strict = BooleanSetting("-strict", "Use strict type rules, which means some formerly legal code does not typecheck anymore.")
   val language = MultiStringSetting("-language", "feature", "Enable one or more language features.")
-  val rewrite = OptionSetting[Rewrites]("-rewrite", "When used in conjunction with -language:Scala2 rewrites sources to migrate to new syntax")
+  val `rewrite` = OptionSetting[Rewrites]("-rewrite", "When used in conjunction with -language:Scala2 rewrites sources to migrate to new syntax")
   val silentWarnings = BooleanSetting("-nowarn", "Silence all warnings.")
   val fromTasty = BooleanSetting("-from-tasty", "Compile classes from tasty in classpath. The arguments are used as class names.")
 
@@ -94,6 +94,8 @@ class ScalaSettings extends Settings.SettingGroup {
   val YlogClasspath = BooleanSetting("-Ylog-classpath", "Output information about what classpath is being applied.")
   val YdisableFlatCpCaching  = BooleanSetting("-YdisableFlatCpCaching", "Do not cache flat classpath representation of classpath elements from jars across compiler instances.")
 
+  val Yscala2Unpickler = StringSetting("-Yscala2-unpickler", "", "Control where we may get Scala 2 symbols from. This is either \"always\", \"never\", or a classpath.", "always")
+
   val YnoImports = BooleanSetting("-Yno-imports", "Compile without importing scala.*, java.lang.*, or Predef.")
   val YnoInline = BooleanSetting("-Yno-inline", "Suppress inlining.")
   val YnoGenericSig = BooleanSetting("-Yno-generic-signatures", "Suppress generation of generic signatures for Java.")
@@ -142,8 +144,6 @@ class ScalaSettings extends Settings.SettingGroup {
   val YshowVarBounds = BooleanSetting("-Yshow-var-bounds", "Print type variables with their bounds")
   val YshowNoInline = BooleanSetting("-Yshow-no-inline", "Show inlined code without the 'inlined from' info")
 
-  /** Linker specific flags */
-  val Xlink = BooleanSetting("-Xlink", "Recompile library code with the application.")
   val YnoDecodeStacktraces = BooleanSetting("-Yno-decode-stacktraces", "Show raw StackOverflow stacktraces, instead of decoding them into triggering operations.")
 
   /** Dottydoc specific settings */

@@ -1,14 +1,12 @@
 import scala.quoted._
-import dotty.tools.dotc.quoted.Toolbox._
 
-import scala.tasty.TopLevelSplice
 import scala.tasty.Tasty
 import scala.tasty.util.TreeTraverser
 
 object Macros {
 
-  implicit inline def printTypes[T](x: => T): Unit =
-    ~impl('(x))(TopLevelSplice.tastyContext) // FIXME infer TopLevelSplice.tastyContext within top level ~
+  implicit rewrite def printTypes[T](x: => T): Unit =
+    ~impl('(x))
 
   def impl[T](x: Expr[T])(implicit tasty: Tasty): Expr[Unit] = {
     import tasty._

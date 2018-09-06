@@ -5,14 +5,16 @@ package classfile
 
 import Contexts._, Symbols._, Types._, Names._, StdNames._, NameOps._, Scopes._, Decorators._
 import SymDenotations._, unpickleScala2.Scala2Unpickler._, Constants._, Annotations._, util.Positions._
-import NameKinds.{ModuleClassName, DefaultGetterName}
+import NameKinds.DefaultGetterName
+import dotty.tools.dotc.core.tasty.{TastyHeaderUnpickler, TastyReader}
 import ast.tpd._
-import java.io.{ ByteArrayInputStream, ByteArrayOutputStream, DataInputStream, File, IOException }
-import java.nio
+import java.io.{ ByteArrayInputStream, ByteArrayOutputStream, DataInputStream, IOException }
+
 import java.lang.Integer.toHexString
 import java.net.URLClassLoader
+import java.util.UUID
 
-import scala.collection.{ mutable, immutable }
+import scala.collection.immutable
 import scala.collection.mutable.{ ListBuffer, ArrayBuffer }
 import scala.annotation.switch
 import typer.Checking.checkNonCyclic
@@ -753,6 +755,20 @@ class ClassfileParser(
       }
 
       def unpickleScala(bytes: Array[Byte]): Some[Embedded] = {
+        val allowed = ctx.settings.Yscala2Unpickler.value
+
+        def failUnless(cond: Boolean) =
+          assert(cond,
+            s"Unpickling ${classRoot.symbol.showLocated} from ${classRoot.symbol.associatedFile} is not allowed with -Yscala2-unpickler $allowed")
+
+        if (allowed != "always") {
+          failUnless(allowed != "never")
+          val allowedList = allowed.split(":").toList
+          val file = classRoot.symbol.associatedFile
+          // Using `.toString.contains` isn't great, but it's good enough for a debug flag.
+          failUnless(file == null || allowedList.exists(path => file.toString.contains(path)))
+        }
+
         val unpickler = new unpickleScala2.Scala2Unpickler(bytes, classRoot, moduleRoot)(ctx)
         unpickler.run()(ctx.addMode(Scala2UnpicklingMode))
         Some(unpickler)
@@ -785,7 +801,8 @@ class ClassfileParser(
 
       if (scan(tpnme.TASTYATTR)) {
         val attrLen = in.nextInt
-        if (attrLen == 0) { // A tasty attribute implies the existence of the .tasty file
+        val bytes = in.nextBytes(attrLen)
+        if (attrLen == 16) { // A tasty attribute with that has only a UUID (16 bytes) implies the existence of the .tasty file
           val tastyBytes: Array[Byte] = classfile.underlyingSource match { // TODO: simplify when #3552 is fixed
             case None =>
               ctx.error("Could not load TASTY from .tasty for virtual file " + classfile)
@@ -816,10 +833,16 @@ class ClassfileParser(
                 Array.empty
               }
           }
-          if (tastyBytes.nonEmpty)
+          if (tastyBytes.nonEmpty) {
+            val reader = new TastyReader(bytes, 0, 16)
+            val expectedUUID = new UUID(reader.readUncompressedLong(), reader.readUncompressedLong())
+            val tastyUUID = new TastyHeaderUnpickler(tastyBytes).readHeader()
+            if (expectedUUID != tastyUUID)
+              ctx.error(s"Tasty UUID ($tastyUUID) file did not correspond the tasty UUID ($expectedUUID) declared in the classfile $classfile.")
             return unpickleTASTY(tastyBytes)
+          }
         }
-        else return unpickleTASTY(in.nextBytes(attrLen))
+        else return unpickleTASTY(bytes)
       }
 
       if (scan(tpnme.ScalaATTR) && !scalaUnpickleWhitelist.contains(classRoot.name)) {
@@ -1057,28 +1080,6 @@ class ClassfileParser(
       val start = starts(index)
       if (in.buf(start).toInt != CONSTANT_CLASS) errorBadTag(start)
       getExternalName(in.getChar(start + 1))
-    }
-
-    /** Return a name and a type at the given index.
-     */
-    private def getNameAndType(index: Int, ownerTpe: Type)(implicit ctx: Context): (Name, Type) = {
-      if (index <= 0 || len <= index) errorBadIndex(index)
-      var p = values(index).asInstanceOf[(Name, Type)]
-      if (p eq null) {
-        val start = starts(index)
-        if (in.buf(start).toInt != CONSTANT_NAMEANDTYPE) errorBadTag(start)
-        val name = getName(in.getChar(start + 1).toInt)
-        var tpe  = getType(in.getChar(start + 3).toInt)
-        // fix the return type, which is blindly set to the class currently parsed
-        if (name == nme.CONSTRUCTOR)
-          tpe match {
-            case tp: MethodType =>
-              tp.derivedLambdaType(tp.paramNames, tp.paramInfos, ownerTpe)
-          }
-        p = (name, tpe)
-        values(index) = p
-      }
-      p
     }
 
     /** Return the type of a class constant entry. Since

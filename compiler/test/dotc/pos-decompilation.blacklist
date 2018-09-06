@@ -1,0 +1,9 @@
+# Stackoverflow on bootstrapped
+large.scala
+large2.scala
+
+# NPE
+i2888.scala
+tcpoly_overloaded.scala
+tcpoly_boundedmonad.scala
+tcpoly_checkkinds_mix.scala

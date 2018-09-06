@@ -10,7 +10,7 @@ import core.StdNames.nme
 
 /** A base class for things that have positions (currently: modifiers and trees)
  */
-abstract class Positioned extends DotClass with Product {
+abstract class Positioned extends Product {
 
   private[this] var curPos: Position = _
 
@@ -34,7 +34,7 @@ abstract class Positioned extends DotClass with Product {
    *  destructively and the item itself is returned.
    */
   def withPos(pos: Position): this.type = {
-    val newpd = (if (pos == curPos || curPos.isSynthetic) this else clone).asInstanceOf[Positioned]
+    val newpd = (if (pos == curPos || curPos.isSynthetic) this else clone.asInstanceOf[Positioned])
     newpd.setPos(pos)
     newpd.asInstanceOf[this.type]
   }
@@ -168,7 +168,7 @@ abstract class Positioned extends DotClass with Product {
     def check(p: Any): Unit = p match {
       case p: Positioned =>
         assert(pos contains p.pos,
-          s"""position error, parent position does not contain child positon
+          s"""position error, parent position does not contain child position
              |parent          = $this,
              |parent position = $pos,
              |child           = $p,

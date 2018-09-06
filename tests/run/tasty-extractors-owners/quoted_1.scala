@@ -1,13 +1,12 @@
 import scala.quoted._
-import dotty.tools.dotc.quoted.Toolbox._
 
 import scala.tasty._
 import scala.tasty.util.TreeTraverser
 
 object Macros {
 
-  implicit inline def printOwners[T](x: => T): Unit =
-    ~impl('(x))(TopLevelSplice.tastyContext) // FIXME infer TopLevelSplice.tastyContext within top level ~
+  implicit rewrite def printOwners[T](x: => T): Unit =
+    ~impl('(x))
 
   def impl[T](x: Expr[T])(implicit tasty: Tasty): Expr[Unit] = {
     import tasty._
@@ -17,15 +16,15 @@ object Macros {
     val output = new TreeTraverser(tasty) {
       override def traverseTree(tree: Tree)(implicit ctx: Context): Unit = {
         tree match {
-          case tree @ DefDef(name, _, _, _, _) =>
+          case IsDefinition(tree @ DefDef(name, _, _, _, _)) =>
             buff.append(name)
             buff.append("\n")
-            buff.append(tree.owner.show)
+            buff.append(tree.symbol.owner.tree.get.show)
             buff.append("\n\n")
-          case tree @ ValDef(name, _, _) =>
+          case IsDefinition(tree @ ValDef(name, _, _)) =>
             buff.append(name)
             buff.append("\n")
-            buff.append(tree.owner.show)
+            buff.append(tree.symbol.owner.tree.get.show)
             buff.append("\n\n")
           case _ =>
         }
