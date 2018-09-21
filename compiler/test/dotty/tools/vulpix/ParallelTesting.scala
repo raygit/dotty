@@ -8,6 +8,7 @@ import java.util.HashMap
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.{Files, NoSuchFileException, Path, Paths}
 import java.util.concurrent.{TimeUnit, TimeoutException, Executors => JExecutors}
+import java.util.{Timer, TimerTask}
 
 import scala.io.Source
 import scala.util.control.NonFatal
@@ -285,11 +286,10 @@ trait ParallelTesting extends RunnerOrchestration { self =>
       realStderr.println(msg + paddingRight)
     }
 
-    /** A single `Runnable` that prints a progress bar for the curent `Test` */
-    private def createProgressMonitor: Runnable = () => {
-      val start = System.currentTimeMillis
-      var tCompiled = testSourcesCompleted
-      while (tCompiled < sourceCount) {
+    /** Print a progress bar for the current `Test` */
+    private def updateProgressMonitor(start: Long): Unit = {
+      val tCompiled = testSourcesCompleted
+      if (tCompiled < sourceCount) {
         val timestamp = (System.currentTimeMillis - start) / 1000
         val progress = (tCompiled.toDouble / sourceCount * 40).toInt
 
@@ -299,16 +299,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
             (" " * (39 - progress)) +
             s"] completed ($tCompiled/$sourceCount, $failureCount failed, ${timestamp}s)\r"
         )
-
-        Thread.sleep(100)
-        tCompiled = testSourcesCompleted
       }
-
-      val timestamp = (System.currentTimeMillis - start) / 1000
-      // println, otherwise no newline and cursor at start of line
-      realStdout.println(
-        s"[=======================================] completed ($sourceCount/$sourceCount, $failureCount failed, ${timestamp}s)"
-      )
     }
 
     /** Wrapper function to make sure that the compiler itself did not crash -
@@ -465,7 +456,15 @@ trait ParallelTesting extends RunnerOrchestration { self =>
           case None => JExecutors.newWorkStealingPool()
         }
 
-        if (isInteractive && !suppressAllOutput) pool.submit(createProgressMonitor)
+        val timer = new Timer()
+        val logProgress = isInteractive && !suppressAllOutput
+        val start = System.currentTimeMillis()
+        if (logProgress) {
+          val task = new TimerTask {
+            def run(): Unit = updateProgressMonitor(start)
+          }
+          timer.schedule(task, 100, 200)
+        }
 
         val eventualResults = filteredSources.map { target =>
           pool.submit(encapsulatedCompilation(target))
@@ -480,6 +479,14 @@ trait ParallelTesting extends RunnerOrchestration { self =>
         }
 
         eventualResults.foreach(_.get)
+
+        if (logProgress) {
+          timer.cancel()
+          val timestamp = (System.currentTimeMillis - start) / 1000
+          realStdout.println(
+            s"[=======================================] completed ($sourceCount/$sourceCount, $failureCount failed, ${timestamp}s)"
+          )
+        }
 
         if (didFail) {
           reportFailed()

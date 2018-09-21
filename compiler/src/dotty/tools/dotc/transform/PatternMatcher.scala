@@ -117,7 +117,7 @@ object PatternMatcher {
     /** Widen type as far as necessary so that it does not refer to a pattern-
      *  generated variable.
      */
-    private def sanitize(tp: Type): Type = tp.widenExpr match {
+    private def sanitize(tp: Type): Type = tp.widenIfUnstable match {
       case tp: TermRef if refersToInternal(false, tp) => sanitize(tp.underlying)
       case tp => tp
     }
@@ -254,7 +254,7 @@ object PatternMatcher {
        */
       def matchElemsPlan(seqSym: Symbol, args: List[Tree], exact: Boolean, onSuccess: Plan) = {
         val selectors = args.indices.toList.map(idx =>
-          ref(seqSym).select(nme.apply).appliedTo(Literal(Constant(idx))))
+          ref(seqSym).select(defn.Seq_apply.matchingMember(seqSym.info)).appliedTo(Literal(Constant(idx))))
         TestPlan(LengthTest(args.length, exact), seqSym, seqSym.pos,
           matchArgsPlan(selectors, args, onSuccess))
       }
@@ -265,8 +265,13 @@ object PatternMatcher {
       def unapplySeqPlan(getResult: Symbol, args: List[Tree]): Plan = args.lastOption match {
         case Some(VarArgPattern(arg)) =>
           val matchRemaining =
-            if (args.length == 1)
-              patternPlan(getResult, arg, onSuccess)
+            if (args.length == 1) {
+              val toSeq = ref(getResult)
+                .select(defn.Seq_toSeq.matchingMember(getResult.info))
+              letAbstract(toSeq) { toSeqResult =>
+                patternPlan(toSeqResult, arg, onSuccess)
+              }
+            }
             else {
               val dropped = ref(getResult)
                 .select(defn.Seq_drop.matchingMember(getResult.info))
@@ -457,6 +462,12 @@ object PatternMatcher {
             apply(initializer(plan.sym))
           plan
         }
+        override def apply(plan: SeqPlan): Plan = {
+          apply(plan.head)
+          if (canFallThrough(plan.head))
+            apply(plan.tail)
+          plan
+        }
       }
       refCounter(plan)
       refCounter.count
@@ -564,8 +575,10 @@ object PatternMatcher {
       new MergeTests()(plan)
     }
 
-    /** Inline let-bound trees that are referenced only once.
-     *  Drop all variables that are not referenced anymore after this.
+    /** Inline let-bound trees that are referenced only once and eliminate dead code.
+     *
+     *  - Drop all variables that are not referenced anymore after inlining.
+     *  - Drop the `tail` of `SeqPlan`s whose `head` cannot fall through.
      */
     private def inlineVars(plan: Plan): Plan = {
       val refCount = varRefCount(plan)
@@ -597,6 +610,18 @@ object PatternMatcher {
             plan
           }
         }
+        override def apply(plan: SeqPlan): Plan = {
+          val newHead = apply(plan.head)
+          if (!canFallThrough(newHead)) {
+            // If the head cannot fall through, the tail is dead code
+            newHead
+          }
+          else {
+            plan.head = newHead
+            plan.tail = apply(plan.tail)
+            plan
+          }
+        }
       }
       Inliner(plan)
     }
@@ -618,11 +643,18 @@ object PatternMatcher {
         case EqualTest(tree) =>
           tree.equal(scrutinee)
         case LengthTest(len, exact) =>
-          scrutinee
-            .select(defn.Seq_lengthCompare.matchingMember(scrutinee.tpe))
-            .appliedTo(Literal(Constant(len)))
-            .select(if (exact) defn.Int_== else defn.Int_>=)
-            .appliedTo(Literal(Constant(0)))
+          val lengthCompareSym = defn.Seq_lengthCompare.matchingMember(scrutinee.tpe)
+          if (lengthCompareSym.exists)
+            scrutinee
+              .select(defn.Seq_lengthCompare.matchingMember(scrutinee.tpe))
+              .appliedTo(Literal(Constant(len)))
+              .select(if (exact) defn.Int_== else defn.Int_>=)
+              .appliedTo(Literal(Constant(0)))
+          else // try length
+            scrutinee
+              .select(defn.Seq_length.matchingMember(scrutinee.tpe))
+              .select(if (exact) defn.Int_== else defn.Int_>=)
+              .appliedTo(Literal(Constant(len)))
         case TypeTest(tpt) =>
           val expectedTp = tpt.tpe
 
@@ -819,7 +851,8 @@ object PatternMatcher {
               default
           }
         case ResultPlan(tree) =>
-          Return(tree, ref(resultLabel))
+          if (tree.tpe <:< defn.NothingType) tree // For example MatchError
+          else Return(tree, ref(resultLabel))
       }
     }
 

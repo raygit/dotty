@@ -248,6 +248,13 @@ class TreePickler(pickler: TastyPickler) {
       pickleType(tpe.underlying)
     case tpe: HKTypeLambda =>
       pickleMethodic(TYPELAMBDAtype, tpe)
+    case tpe: MatchType =>
+      writeByte(MATCHtype)
+      withLength {
+        pickleType(tpe.bound)
+        pickleType(tpe.scrutinee)
+        tpe.cases.foreach(pickleType(_))
+      }
     case tpe: PolyType if richTypes =>
       pickleMethodic(POLYtype, tpe)
     case tpe: MethodType if richTypes =>
@@ -531,6 +538,13 @@ class TreePickler(pickler: TastyPickler) {
         case OrTypeTree(tp1, tp2) =>
           writeByte(ORtpt)
           withLength { pickleTree(tp1); pickleTree(tp2) }
+        case MatchTypeTree(bound, selector, cases) =>
+          writeByte(MATCHtpt)
+          withLength {
+            if (!bound.isEmpty) pickleTree(bound)
+            pickleTree(selector)
+            cases.foreach(pickleTree)
+          }
         case ByNameTypeTree(tp) =>
           writeByte(BYNAMEtpt)
           pickleTree(tp)
@@ -602,8 +616,7 @@ class TreePickler(pickler: TastyPickler) {
     if (flags.is(Final, butNot = Module)) writeByte(FINAL)
     if (flags is Case) writeByte(CASE)
     if (flags is Override) writeByte(OVERRIDE)
-    if (flags is Transparent) writeByte(TRANSPARENT)
-    if (flags is Rewrite) writeByte(REWRITE)
+    if (flags is Inline) writeByte(INLINE)
     if (flags is Macro) writeByte(MACRO)
     if (flags is JavaStatic) writeByte(STATIC)
     if (flags is Module) writeByte(OBJECT)
@@ -768,13 +781,13 @@ class TreePickler(pickler: TastyPickler) {
       case If(cond, thenp, elsep) =>
         writeByte(IF)
         withLength {
-          if (tree.isInstanceOf[untpd.RewriteIf]) writeByte(REWRITE)
+          if (tree.isInstanceOf[untpd.InlineIf]) writeByte(INLINE)
           pickleUntyped(cond); pickleUntyped(thenp); pickleUntyped(elsep)
         }
       case Match(selector, cases) =>
         writeByte(MATCH)
         withLength {
-          if (tree.isInstanceOf[untpd.RewriteMatch]) writeByte(REWRITE)
+          if (tree.isInstanceOf[untpd.InlineMatch]) writeByte(INLINE)
           pickleUntyped(selector); cases.foreach(pickleUntyped)
         }
       case CaseDef(pat, guard, rhs) =>
@@ -838,6 +851,13 @@ class TreePickler(pickler: TastyPickler) {
       case Annotated(tree, annot) =>
         writeByte(ANNOTATEDtpt)
         withLength { pickleTpt(tree); pickleTerm(annot) }
+      case MatchTypeTree(bound, selector, cases) =>
+        writeByte(MATCHtpt)
+        withLength {
+          if (!bound.isEmpty) pickleTpt(bound)
+          pickleTpt(selector)
+          cases.foreach(pickleUntyped)
+        }
       case LambdaTypeTree(tparams, body) =>
         writeByte(LAMBDAtpt)
         withLength { pickleParams(tparams); pickleTpt(body) }
@@ -853,6 +873,9 @@ class TreePickler(pickler: TastyPickler) {
       case untpd.InfixOp(l, op, r) =>
         writeByte(INFIXOP)
         withLength { pickleUntyped(l); pickleUntyped(op); pickleUntyped(r) }
+      case untpd.Tuple(elems) =>
+        writeByte(TUPLE)
+        withLength { elems.foreach(pickleUntyped) }
       case untpd.PatDef(mods, pats, tpt, rhs) =>
         writeByte(PATDEF)
         withLength {

@@ -15,7 +15,7 @@ import StdNames._
 import Contexts.Context
 import Names.{Name, TermName, EmptyTermName}
 import NameOps._
-import NameKinds.{ClassifiedNameKind, InlineAccessorName, UniqueInlineName, RewriteScrutineeName, RewriteBinderName}
+import NameKinds.{ClassifiedNameKind, InlineAccessorName, UniqueInlineName, InlineScrutineeName, InlineBinderName}
 import ProtoTypes.selectionProto
 import SymDenotations.SymDenotation
 import Annotations._
@@ -43,11 +43,11 @@ object Inliner {
   def inlineBindings(implicit ctx: Context): MutableSymbolMap[Tree] =
     ctx.property(InlineBindings).get
 
-  /** `sym` is a rewrite or transparent method with a known body to inline (note: definitions coming
+  /** `sym` is an inline method with a known body to inline (note: definitions coming
    *  from Scala2x class files might be `@forceInline`, but still lack that body).
    */
   def hasBodyToInline(sym: SymDenotation)(implicit ctx: Context): Boolean =
-    sym.isInlineable && sym.hasAnnotation(defn.BodyAnnot)
+    sym.isInlineMethod && sym.hasAnnotation(defn.BodyAnnot)
 
   /** The body to inline for method `sym`.
    *  @pre  hasBodyToInline(sym)
@@ -57,9 +57,7 @@ object Inliner {
 
   /** Should call to method `meth` be inlined in this context? */
   def isInlineable(meth: Symbol)(implicit ctx: Context): Boolean =
-    (meth.is(Rewrite) || meth.is(Transparent) && ctx.isInlineContext) &&
-    hasBodyToInline(meth) &&
-    !ctx.inRewriteMethod
+    meth.is(Inline) && hasBodyToInline(meth) && !ctx.inInlineMethod
 
   /** Should call be inlined in this context? */
   def isInlineable(tree: Tree)(implicit ctx: Context): Boolean = tree match {
@@ -67,7 +65,7 @@ object Inliner {
     case _ => isInlineable(tree.symbol)
   }
 
-  /** Try to inline a call to a rewrite or transparent method. Fail with error if the maximal
+  /** Try to inline a call to an inline method. Fail with error if the maximal
    *  inline depth is exceeded.
    *
    *  @param tree   The call to inline
@@ -131,8 +129,8 @@ object Inliner {
       errorTree(
         tree,
         i"""|Maximal number of successive inlines (${ctx.settings.XmaxInlines.value}) exceeded,
-            |Maybe this is caused by a recursive rewrite method?
-            |You can use -Xmax:inlines to change the limit.""",
+            |Maybe this is caused by a recursive inline method?
+            |You can use -Xmax-inlines to change the limit.""",
         (tree :: enclosingInlineds).last.pos
       )
   }
@@ -223,7 +221,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
   private def newSym(name: Name, flags: FlagSet, info: Type): Symbol =
     ctx.newSymbol(ctx.owner, name, flags, info, coord = call.pos)
 
-  /** A binding for the parameter of an inlined method. This is a `val` def for
+  /** A binding for the parameter of an inline method. This is a `val` def for
    *  by-value parameters and a `def` def for by-name parameters. `val` defs inherit
    *  inline annotations from their parameters. The generated `def` is appended
    *  to `bindingsBuf`.
@@ -236,7 +234,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
                               bindingsBuf: mutable.ListBuffer[MemberDef]): MemberDef = {
     val argtpe = arg.tpe.dealiasKeepAnnots
     val isByName = paramtp.dealias.isInstanceOf[ExprType]
-    val inlineFlag = if (paramtp.hasAnnotation(defn.TransparentParamAnnot)) Transparent else EmptyFlags
+    val inlineFlag = if (paramtp.hasAnnotation(defn.InlineParamAnnot)) Inline else EmptyFlags
     val (bindingFlags, bindingType) =
       if (isByName) (Method, ExprType(argtpe.widen))
       else (inlineFlag, argtpe.widen)
@@ -311,7 +309,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
    *
    *  1a. If given type refers to a static this, thisProxy binds it to corresponding global reference,
    *  1b. If given type refers to an instance this to a class that is not contained in the
-   *      inlined method, create a proxy symbol and bind the thistype to refer to the proxy.
+   *      inline method, create a proxy symbol and bind the thistype to refer to the proxy.
    *      The proxy is not yet entered in `bindingsBuf`; that will come later.
    *  2.  If given type refers to a parameter, make `paramProxy` refer to the entry stored
    *      in `paramNames` under the parameter's name. This roundabout way to bind parameter
@@ -349,8 +347,29 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
     else result
   }
 
+  def tryConstValue: Tree =
+    ctx.typeComparer.constValue(callTypeArgs.head.tpe) match {
+      case Some(c) => Literal(c).withPos(call.pos)
+      case _ => EmptyTree
+    }
+
   /** The Inlined node representing the inlined call */
-  def inlined(pt: Type) = {
+  def inlined(pt: Type): Tree = {
+
+    if (callTypeArgs.length == 1)
+      if (inlinedMethod == defn.Typelevel_constValue) {
+        val constVal = tryConstValue
+        if (!constVal.isEmpty) return constVal
+        ctx.error(i"not a constant type: ${callTypeArgs.head}; cannot take constValue", call.pos)
+      }
+      else if (inlinedMethod == defn.Typelevel_constValueOpt) {
+        val constVal = tryConstValue
+        return (
+          if (constVal.isEmpty) ref(defn.NoneModuleRef)
+          else New(defn.SomeClass.typeRef.appliedTo(constVal.tpe), constVal :: Nil)
+        )
+      }
+
     // Compute bindings for all parameters, appending them to bindingsBuf
     computeParamBindings(inlinedMethod.info, callTypeArgs, callValueArgss)
 
@@ -393,7 +412,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
           }
         case tree: Ident =>
           paramProxy.get(tree.tpe) match {
-            case Some(t) if tree.isTerm && t.isSingleton => singleton(t).withPos(tree.pos)
+            case Some(t) if tree.isTerm && t.isSingleton => singleton(t.dealias).withPos(tree.pos)
             case Some(t) if tree.isType => TypeTree(t).withPos(tree.pos)
             case _ => tree
           }
@@ -425,6 +444,34 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
         expansion
     }
 
+    def issueError() = callValueArgss match {
+      case (msgArg :: rest) :: Nil =>
+        msgArg.tpe match {
+          case ConstantType(Constant(msg: String)) =>
+            // Usually `error` is called from within a rewrite method. In this
+            // case we need to report the error at the point of the outermost enclosing inline
+            // call. This way, a defensively written rewrite methid can always
+            // report bad inputs at the point of call instead of revealing its internals.
+            val callToReport = if (enclosingInlineds.nonEmpty) enclosingInlineds.last else call
+            val ctxToReport = ctx.outersIterator.dropWhile(enclosingInlineds(_).nonEmpty).next
+            def issueInCtx(implicit ctx: Context) = {
+              def decompose(arg: Tree): String = arg match {
+                case Typed(arg, _) => decompose(arg)
+                case SeqLiteral(elems, _) => elems.map(decompose).mkString(", ")
+                case arg =>
+                  arg.tpe.widenTermRefExpr match {
+                    case ConstantType(Constant(c)) => c.toString
+                    case _ => arg.show
+                  }
+              }
+              ctx.error(s"$msg${rest.map(decompose).mkString(", ")}", callToReport.pos)
+            }
+            issueInCtx(ctxToReport)
+          case _ =>
+        }
+      case _ =>
+    }
+
     trace(i"inlining $call", inlining, show = true) {
 
       // The normalized bindings collected in `bindingsBuf`
@@ -443,6 +490,8 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
       val matchBindings = reducer.matchBindingsBuf.toList
       val (finalBindings, finalExpansion) = dropUnusedDefs(bindingsBuf.toList ++ matchBindings, expansion1)
       val (finalMatchBindings, finalArgBindings) = finalBindings.partition(matchBindings.contains(_))
+
+      if (inlinedMethod == defn.Typelevel_error) issueError()
 
       // Take care that only argument bindings go into `bindings`, since positions are
       // different for bindings from arguments and bindings from body.
@@ -463,29 +512,35 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
      *             - the class `C`
      *             - the arguments `args`
      *             - any bindings that wrap the instance creation
+     *             - whether the instance creation is precomputed or by-name
      */
     private object NewInstance {
-      def unapply(tree: Tree)(implicit ctx: Context): Option[(Symbol, List[Tree], List[Tree])] = {
+      def unapply(tree: Tree)(implicit ctx: Context): Option[(Symbol, List[Tree], List[Tree], Boolean)] = {
         def unapplyLet(bindings: List[Tree], expr: Tree) =
           unapply(expr) map {
-            case (cls, reduced, prefix) => (cls, reduced, bindings ::: prefix)
+            case (cls, reduced, prefix, precomputed) => (cls, reduced, bindings ::: prefix, precomputed)
           }
         tree match {
           case Apply(fn, args) =>
             fn match {
               case Select(New(tpt), nme.CONSTRUCTOR) =>
-                Some((tpt.tpe.classSymbol, args, Nil))
+                Some((tpt.tpe.classSymbol, args, Nil, false))
               case TypeApply(Select(New(tpt), nme.CONSTRUCTOR), _) =>
-                Some((tpt.tpe.classSymbol, args, Nil))
+                Some((tpt.tpe.classSymbol, args, Nil, false))
               case _ =>
                 val meth = fn.symbol
                 if (meth.name == nme.apply &&
                     meth.flags.is(Synthetic) &&
-                    meth.owner.linkedClass.is(Case)) Some(meth.owner.linkedClass, args, Nil)
+                    meth.owner.linkedClass.is(Case))
+                  Some(meth.owner.linkedClass, args, Nil, false)
                 else None
             }
           case Ident(_) =>
-            inlineBindings.get(tree.symbol).flatMap(unapply)
+            for {
+              binding <- inlineBindings.get(tree.symbol)
+              (cls, reduced, prefix, precomputed) <- unapply(binding)
+            }
+            yield (cls, reduced, prefix, precomputed || binding.isInstanceOf[ValDef])
           case Inlined(_, bindings, expansion) =>
             unapplyLet(bindings, expansion)
           case Block(stats, expr) if isPureExpr(tree) =>
@@ -498,13 +553,13 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
 
     /** If `tree` is equivalent to `new C(args).x` where class `C` does not have
      *  initialization code and `x` is a parameter corresponding to one of the
-     *  arguments `args`, the corresponding argument, prefixed by the evaluation
-     *  of impure arguments, otherwise `tree` itself.
+     *  arguments `args`, the corresponding argument, otherwise `tree` itself.
+     *  Side effects of original arguments need to be preserved.
      */
     def reduceProjection(tree: Tree)(implicit ctx: Context): Tree = {
       if (ctx.debug) inlining.println(i"try reduce projection $tree")
       tree match {
-        case Select(NewInstance(cls, args, prefix), field) if cls.isNoInitsClass =>
+        case Select(NewInstance(cls, args, prefix, precomputed), field) if cls.isNoInitsClass =>
           def matches(param: Symbol, selection: Symbol): Boolean =
             param == selection || {
               selection.name match {
@@ -516,17 +571,25 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
             }
           val idx = cls.asClass.paramAccessors.indexWhere(matches(_, tree.symbol))
           if (idx >= 0 && idx < args.length) {
-            def collectImpure(from: Int, end: Int) =
-              (from until end).filterNot(i => isPureExpr(args(i))).toList.map(args)
-            val leading = collectImpure(0, idx)
-            val trailing = collectImpure(idx + 1, args.length)
+            def finish(arg: Tree) =
+              new TreeTypeMap().transform(arg) // make sure local bindings in argument have fresh symbols
+                .reporting(res => i"projecting $tree -> $res", inlining)
             val arg = args(idx)
-            val argInPlace =
-              if (trailing.isEmpty) arg
-              else letBindUnless(TreeInfo.Pure, arg)(seq(trailing, _))
-            val fullArg = seq(prefix, seq(leading, argInPlace))
-            new TreeTypeMap().transform(fullArg) // make sure local bindings in argument have fresh symbols
-              .reporting(res => i"projecting $tree -> $res", inlining)
+            if (precomputed)
+              if (isPureExpr(arg)) finish(arg)
+              else tree // nothing we can do here, projection would duplicate side effect
+            else {
+              // newInstance is evaluated in place, need to reflect side effects of
+              // arguments in the order they were written originally
+              def collectImpure(from: Int, end: Int) =
+                (from until end).filterNot(i => isPureExpr(args(i))).toList.map(args)
+              val leading = collectImpure(0, idx)
+              val trailing = collectImpure(idx + 1, args.length)
+              val argInPlace =
+                if (trailing.isEmpty) arg
+                else letBindUnless(TreeInfo.Pure, arg)(seq(trailing, _))
+              finish(seq(prefix, seq(leading, argInPlace)))
+            }
           }
           else tree
         case Block(stats, expr) if stats.forall(isPureBinding) =>
@@ -565,7 +628,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
         def search(buf: mutable.ListBuffer[MemberDef]) = buf.find(_.name == tree.name)
         if (paramProxies.contains(tree.typeOpt))
           search(bindingsBuf).orElse(search(matchBindingsBuf)) match {
-            case Some(vdef: ValDef) if vdef.symbol.is(Transparent) =>
+            case Some(vdef: ValDef) if vdef.symbol.is(Inline) =>
               Some(integrate(vdef.rhs, vdef.symbol))
             case Some(ddef: DefDef) =>
               Some(integrate(ddef.rhs, ddef.symbol))
@@ -629,7 +692,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
      */
     type MatchRedux = Option[(List[MemberDef], untpd.Tree)]
 
-    /** Reduce a rewrite match
+    /** Reduce an inline match
      *   @param     scrutinee    the scrutinee expression, assumed to be pure
      *   @param     scrutType    its fully defined type
      *   @param     cases        All cases of the match
@@ -637,7 +700,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
      *   @return    optionally, if match can be reduced to a matching case: A pair of
      *              bindings for all pattern-bound variables and the untyped RHS of the case.
      */
-    def reduceRewriteMatch(scrutinee: Tree, scrutType: Type, cases: List[untpd.CaseDef], typer: Typer)(implicit ctx: Context): MatchRedux = {
+    def reduceInlineMatch(scrutinee: Tree, scrutType: Type, cases: List[untpd.CaseDef], typer: Typer)(implicit ctx: Context): MatchRedux = {
 
       val gadtSyms = typer.gadtSyms(scrutType)
 
@@ -718,21 +781,34 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
           case UnApply(unapp, _, pats) =>
             unapp.tpe.widen match {
               case mt: MethodType if mt.paramInfos.length == 1 =>
+
+                def reduceSubPatterns(pats: List[Tree], selectors: List[Tree]): Boolean = (pats, selectors) match {
+                  case (Nil, Nil) => true
+                  case (pat :: pats1, selector :: selectors1) =>
+                    val elem = newBinding(InlineBinderName.fresh(), Synthetic, selector)
+                    reducePattern(bindingsBuf, elem.termRef, pat) &&
+                    reduceSubPatterns(pats1, selectors1)
+                  case _ => false
+                }
+
                 val paramType = mt.paramInfos.head
                 val paramCls = paramType.classSymbol
-                paramCls.is(Case) && unapp.symbol.is(Synthetic) && scrut <:< paramType && {
+                if (paramCls.is(Case) && unapp.symbol.is(Synthetic) && scrut <:< paramType) {
                   val caseAccessors =
                     if (paramCls.is(Scala2x)) paramCls.caseAccessors.filter(_.is(Method))
                     else paramCls.asClass.paramAccessors
-                  var subOK = caseAccessors.length == pats.length
-                  for ((pat, accessor) <- (pats, caseAccessors).zipped)
-                    subOK = subOK && {
-                      val rhs = constToLiteral(reduceProjection(ref(scrut).select(accessor).ensureApplied))
-                      val elem = newBinding(RewriteBinderName.fresh(), Synthetic, rhs)
-                      reducePattern(bindingsBuf, elem.termRef, pat)
-                    }
-                  subOK
+                  val selectors =
+                    for (accessor <- caseAccessors)
+                    yield constToLiteral(reduceProjection(ref(scrut).select(accessor).ensureApplied))
+                  caseAccessors.length == pats.length && reduceSubPatterns(pats, selectors)
                 }
+                else if (unapp.symbol.isInlineMethod) {
+                  val app = untpd.Apply(untpd.TypedSplice(unapp), untpd.ref(scrut))
+                  val app1 = typer.typedExpr(app)
+                  val args = tupleArgs(app1)
+                  args.nonEmpty && reduceSubPatterns(pats, args)
+                }
+                else false
               case _ =>
                 false
             }
@@ -741,7 +817,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
       }
 
       /** The initial scrutinee binding: `val $scrutineeN = <scrutinee>` */
-      val scrutineeSym = newSym(RewriteScrutineeName.fresh(), Synthetic, scrutType).asTerm
+      val scrutineeSym = newSym(InlineScrutineeName.fresh(), Synthetic, scrutType).asTerm
       val scrutineeBinding = normalizeBinding(ValDef(scrutineeSym, scrutinee))
 
       def reduceCase(cdef: untpd.CaseDef): MatchRedux = {
@@ -811,8 +887,8 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
           if (isIdempotentExpr(cond1)) selected
           else Block(cond1 :: Nil, selected)
         case cond1 =>
-          if (tree.isInstanceOf[untpd.RewriteIf])
-            errorTree(tree, em"""cannot reduce rewrite if
+          if (tree.isInstanceOf[untpd.InlineIf])
+            errorTree(tree, em"""cannot reduce inline if
                                 | its condition   ${tree.cond}
                                 | is not a constant value.""")
           val if1 = untpd.cpy.If(tree)(cond = untpd.TypedSplice(cond1))
@@ -820,8 +896,8 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
       }
 
     override def typedMatchFinish(tree: untpd.Match, sel: Tree, selType: Type, pt: Type)(implicit ctx: Context) = tree match {
-      case _: untpd.RewriteMatch if !ctx.owner.isRewriteMethod => // don't reduce match of nested rewrite method yet
-        reduceRewriteMatch(sel, sel.tpe, tree.cases, this) match {
+      case _: untpd.InlineMatch if !ctx.owner.isInlineMethod => // don't reduce match of nested inline method yet
+        reduceInlineMatch(sel, sel.tpe, tree.cases, this) match {
           case Some((caseBindings, rhs)) =>
             var rhsCtx = ctx.fresh.setNewScope
             for (binding <- caseBindings) {
@@ -832,7 +908,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
           case None =>
             def guardStr(guard: untpd.Tree) = if (guard.isEmpty) "" else i" if $guard"
             def patStr(cdef: untpd.CaseDef) = i"case ${cdef.pat}${guardStr(cdef.guard)}"
-            errorTree(tree, em"""cannot reduce rewrite match with
+            errorTree(tree, em"""cannot reduce inline match with
                                 | scrutinee:  $sel : ${sel.tpe}
                                 | patterns :  ${tree.cases.map(patStr).mkString("\n             ")}.""")
         }
@@ -888,7 +964,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
         case Some(x) => x > 1 || x == 1 && !boundSym.is(Method)
         case none => true
       }
-    } && !boundSym.is(ImplicitRewriteMethod)
+    } && !boundSym.is(ImplicitInlineMethod)
 
     val (termBindings, typeBindings) = bindings.partition(_.symbol.isTerm)
 

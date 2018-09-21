@@ -12,7 +12,7 @@ class InlineBytecodeTests extends DottyBytecodeTest {
   @Test def inlineUnit = {
     val source = """
                  |class Foo {
-                 |  rewrite def foo: Int = 1
+                 |  inline def foo: Int = 1
                  |  @forceInline def bar: Int = 1
                  |
                  |  def meth1: Unit = foo
@@ -44,7 +44,7 @@ class InlineBytecodeTests extends DottyBytecodeTest {
 
   @Test def i4947 = {
     val source = """class Foo {
-                   |  rewrite def track[T](f: => T): T = {
+                   |  inline def track[T](f: => T): T = {
                    |    foo("tracking") // line 3
                    |    f // line 4
                    |  }
@@ -103,11 +103,11 @@ class InlineBytecodeTests extends DottyBytecodeTest {
 
   @Test def i4947b = {
     val source = """class Foo {
-                   |  rewrite def track2[T](f: => T): T = {
+                   |  inline def track2[T](f: => T): T = {
                    |    foo("tracking2") // line 3
                    |    f // line 4
                    |  }
-                   |  rewrite def track[T](f: => T): T = {
+                   |  inline def track[T](f: => T): T = {
                    |    foo("tracking") // line 7
                    |    track2 { // line 8
                    |      f // line 9
@@ -163,11 +163,11 @@ class InlineBytecodeTests extends DottyBytecodeTest {
 
   @Test def i4947c = {
     val source = """class Foo {
-                   |  rewrite def track2[T](f: => T): T = {
+                   |  inline def track2[T](f: => T): T = {
                    |    foo("tracking2") // line 3
                    |    f // line 4
                    |  }
-                   |  rewrite def track[T](f: => T): T = {
+                   |  inline def track[T](f: => T): T = {
                    |    track2 { // line 7
                    |      foo("fgh") // line 8
                    |      f // line 9
@@ -223,11 +223,11 @@ class InlineBytecodeTests extends DottyBytecodeTest {
 
   @Test def i4947d = {
     val source = """class Foo {
-                   |  rewrite def track2[T](f: => T): T = {
+                   |  inline def track2[T](f: => T): T = {
                    |    foo("tracking2") // line 3
                    |    f // line 4
                    |  }
-                   |  rewrite def track[T](f: => T): T = {
+                   |  inline def track[T](f: => T): T = {
                    |    track2 { // line 7
                    |      track2 { // line 8
                    |        f // line 9
@@ -278,6 +278,45 @@ class InlineBytecodeTests extends DottyBytecodeTest {
         )
         assert(instructions == expected,
           "`track` was not properly inlined in `main`\n" + diffInstructions(instructions, expected))
+
+    }
+  }
+
+    // Testing that a is not boxed
+    @Test def i4522 = {
+    val source = """class Foo {
+                   |  def test: Int = {
+                   |    var a = 10
+                   |
+                   |    inline def f() = {
+                   |      a += 1
+                   |    }
+                   |
+                   |    f()
+                   |    a
+                   |  }
+                   |}
+                 """.stripMargin
+
+    checkBCode(source) { dir =>
+      val clsIn      = dir.lookupName("Foo.class", directory = false).input
+      val clsNode    = loadClassNode(clsIn)
+
+      val fun = getMethod(clsNode, "test")
+      val instructions = instructionsFromMethod(fun)
+      val expected =
+        List(
+          IntOp(BIPUSH, 10)
+          , VarOp(ISTORE, 1)
+          , VarOp(ILOAD, 1)
+          , Op(ICONST_1)
+          , Op(IADD)
+          , VarOp(ISTORE, 1)
+          , VarOp(ILOAD, 1)
+          , Op(IRETURN)
+        )
+        assert(instructions == expected,
+          "`f` was not properly inlined in `fun`\n" + diffInstructions(instructions, expected))
 
     }
   }

@@ -132,9 +132,7 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
 
     case class Lazy() extends Mod(Flags.Lazy)
 
-    case class Rewrite() extends Mod(Flags.Rewrite)
-
-    case class Transparent() extends Mod(Flags.Transparent)
+    case class Inline() extends Mod(Flags.Inline)
 
     case class Enum() extends Mod(Flags.Enum)
   }
@@ -275,10 +273,10 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
   def Assign(lhs: Tree, rhs: Tree): Assign = new Assign(lhs, rhs)
   def Block(stats: List[Tree], expr: Tree): Block = new Block(stats, expr)
   def If(cond: Tree, thenp: Tree, elsep: Tree): If = new If(cond, thenp, elsep)
-  def RewriteIf(cond: Tree, thenp: Tree, elsep: Tree): If = new RewriteIf(cond, thenp, elsep)
+  def InlineIf(cond: Tree, thenp: Tree, elsep: Tree): If = new InlineIf(cond, thenp, elsep)
   def Closure(env: List[Tree], meth: Tree, tpt: Tree): Closure = new Closure(env, meth, tpt)
   def Match(selector: Tree, cases: List[CaseDef]): Match = new Match(selector, cases)
-  def RewriteMatch(selector: Tree, cases: List[CaseDef]): Match = new RewriteMatch(selector, cases)
+  def InlineMatch(selector: Tree, cases: List[CaseDef]): Match = new InlineMatch(selector, cases)
   def CaseDef(pat: Tree, guard: Tree, body: Tree): CaseDef = new CaseDef(pat, guard, body)
   def Labeled(bind: Bind, expr: Tree): Labeled = new Labeled(bind, expr)
   def Return(expr: Tree, from: Tree): Return = new Return(expr, from)
@@ -293,6 +291,7 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
   def RefinedTypeTree(tpt: Tree, refinements: List[Tree]): RefinedTypeTree = new RefinedTypeTree(tpt, refinements)
   def AppliedTypeTree(tpt: Tree, args: List[Tree]): AppliedTypeTree = new AppliedTypeTree(tpt, args)
   def LambdaTypeTree(tparams: List[TypeDef], body: Tree): LambdaTypeTree = new LambdaTypeTree(tparams, body)
+  def MatchTypeTree(bound: Tree, selector: Tree, cases: List[CaseDef]): MatchTypeTree = new MatchTypeTree(bound, selector, cases)
   def ByNameTypeTree(result: Tree): ByNameTypeTree = new ByNameTypeTree(result)
   def TypeBoundsTree(lo: Tree, hi: Tree): TypeBoundsTree = new TypeBoundsTree(lo, hi)
   def Bind(name: Name, body: Tree): Bind = new Bind(name, body)

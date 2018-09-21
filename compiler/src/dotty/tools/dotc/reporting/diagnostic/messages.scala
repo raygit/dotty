@@ -490,22 +490,6 @@ object messages {
     }
   }
 
-  case class TupleTooLong(ts: List[untpd.Tree])(implicit ctx: Context)
-  extends Message(TupleTooLongID) {
-    import Definitions.MaxTupleArity
-    val kind = "Syntax"
-    val msg = hl"""A ${"tuple"} cannot have more than ${MaxTupleArity} members"""
-
-    val explanation = {
-      val members = ts.map(_.showSummary).grouped(MaxTupleArity)
-      val nestedRepresentation = members.map(_.mkString(", ")).mkString(")(")
-      hl"""|This restriction will be removed in the future.
-           |Currently it is possible to use nested tuples when more than $MaxTupleArity are needed, for example:
-           |
-           |((${nestedRepresentation}))"""
-    }
-  }
-
   case class RepeatedModifier(modifier: String)(implicit ctx:Context)
   extends Message(RepeatedModifierID) {
     val kind = "Syntax"
@@ -1752,7 +1736,7 @@ object messages {
     val kind = "Syntax"
     val msg = hl"no explicit ${"return"} allowed from inlineable $owner"
     val explanation =
-      hl"""Methods marked with ${"rewrite"} or  ${"transparent"} modifier may not use ${"return"} statements.
+      hl"""Methods marked with ${"inline"} modifier may not use ${"return"} statements.
           |Instead, you should rely on the last expression's value being
           |returned from a method.
           |"""
@@ -2058,10 +2042,10 @@ object messages {
           |polymorphic methods."""
   }
 
-  case class ParamsNoTransparent(owner: Symbol)(implicit ctx: Context)
-    extends Message(ParamsNoTransparentID) {
+  case class ParamsNoInline(owner: Symbol)(implicit ctx: Context)
+    extends Message(ParamsNoInlineID) {
     val kind = "Syntax"
-    val msg = hl"""${"transparent"} modifier can only be used for parameters of rewrite methods"""
+    val msg = hl"""${"inline"} modifier can only be used for parameters of inline methods"""
     val explanation = ""
   }
 
@@ -2121,9 +2105,9 @@ object messages {
            |""".stripMargin
   }
 
-  case class CaseClassCannotExtendEnum(cls: Symbol)(implicit ctx: Context) extends Message(CaseClassCannotExtendEnumID) {
+  case class CaseClassCannotExtendEnum(cls: Symbol, parent: Symbol)(implicit ctx: Context) extends Message(CaseClassCannotExtendEnumID) {
     override def kind: String = "Syntax"
-    override def msg: String = hl"""normal case $cls in ${cls.owner} cannot extend an enum"""
+    override def msg: String = hl"""normal case class cannot extend an enum. case $cls in ${cls.owner} is extending enum ${parent.name}."""
     override def explanation: String = ""
   }
 }

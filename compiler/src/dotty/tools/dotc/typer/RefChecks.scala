@@ -108,6 +108,20 @@ object RefChecks {
     case _ =>
   }
 
+  /** Disallow using trait parameters as prefix for its parents.
+   *
+   *  The rationale is to ensure outer-related NPE never happen in Scala.
+   *  Otherwise, outer NPE may happen, see tests/neg/i5083.scala
+   */
+  private def checkParentPrefix(cls: Symbol, parent: Tree)(implicit ctx: Context): Unit =
+    parent.tpe.typeConstructor match {
+      case TypeRef(ref: TermRef, _) =>
+        val paramRefs = ref.namedPartsWith(ntp => ntp.symbol.enclosingClass == cls)
+        if (paramRefs.nonEmpty)
+          ctx.error("trait parameters cannot be used as parent prefixes", parent.pos)
+      case _ =>
+    }
+
   /** Check that a class and its companion object to not both define
    *  a class or module with same name
    */
@@ -144,7 +158,7 @@ object RefChecks {
    *    1.8.2  M is of type []S, O is of type ()T and S <: T, or
    *    1.8.3  M is of type ()S, O is of type []T and S <: T, or
    *    1.9    If M or O are erased, they must be both erased
-   *    1.10   If M is a rewrite or Scala-2 macro method, O cannot be deferred unless
+   *    1.10   If M is an inline or Scala-2 macro method, O cannot be deferred unless
    *           there's also a concrete method that M overrides.
    *    1.11.  If O is a Scala-2 macro, M must be a Scala-2 macro.
    *  2. Check that only abstract classes have deferred members
@@ -381,9 +395,9 @@ object RefChecks {
         overrideError("is erased, cannot override non-erased member")
       } else if (other.is(Erased) && !member.is(Erased)) { // (1.9)
         overrideError("is not erased, cannot override erased member")
-      } else if ((member.is(Rewrite) || member.is(Scala2Macro)) && other.is(Deferred) &&
+      } else if ((member.isInlineMethod || member.is(Scala2Macro)) && other.is(Deferred) &&
                  member.extendedOverriddenSymbols.forall(_.is(Deferred))) { // (1.10)
-        overrideError("is a rewrite method, must override at least one concrete method")
+        overrideError("is an inline method, must override at least one concrete method")
       } else if (other.is(Scala2Macro) && !member.is(Scala2Macro)) { // (1.11)
         overrideError("cannot be used here - only Scala-2 macros can override Scala-2 macros")
       } else if (!compatibleTypes(memberTp(self), otherTp(self)) &&
@@ -961,6 +975,7 @@ class RefChecks extends MiniPhase { thisPhase =>
     val cls = ctx.owner
     checkOverloadedRestrictions(cls)
     checkParents(cls)
+    if (cls.is(Trait)) tree.parents.foreach(checkParentPrefix(cls, _))
     checkCompanionNameClashes(cls)
     checkAllOverrides(cls)
     tree

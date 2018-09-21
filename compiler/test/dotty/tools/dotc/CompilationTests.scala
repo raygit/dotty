@@ -161,6 +161,7 @@ class CompilationTests extends ParallelTesting {
     compileFile("tests/neg-custom-args/i1754.scala", allowDeepSubtypes) +
     compileFilesInDir("tests/neg-custom-args/isInstanceOf", allowDeepSubtypes and "-Xfatal-warnings") +
     compileFile("tests/neg-custom-args/i3627.scala", allowDeepSubtypes) +
+    compileFile("tests/neg-custom-args/matchtype-loop.scala", allowDeepSubtypes) +
     compileFile("tests/neg-custom-args/completeFromSource/nested/Test1.scala", defaultOptions.and("-sourcepath", "tests/neg-custom-args", "-scansource"))
   }.checkExpectedErrors()
 
@@ -183,7 +184,8 @@ class CompilationTests extends ParallelTesting {
   @Test def pickling: Unit = {
     implicit val testGroup: TestGroup = TestGroup("testPickling")
     compileFilesInDir("tests/new", picklingOptions) +
-    compileFilesInDir("tests/pickling", picklingOptions)
+    compileFilesInDir("tests/pos", picklingOptions, FileFilter.exclude(TestSources.posTestPicklingBlacklisted)) +
+    compileFilesInDir("tests/run", picklingOptions, FileFilter.exclude(TestSources.runTestPicklingBlacklisted))
   }.checkCompile()
 
   /** The purpose of this test is two-fold, being able to compile dotty
@@ -199,19 +201,24 @@ class CompilationTests extends ParallelTesting {
     // Make sure that the directory is clean
     dotty.tools.io.Directory(defaultOutputDir + "tastyBootstrap").deleteRecursively()
 
+    val sep = java.io.File.pathSeparator
+
     val opt = TestFlags(
       // compile with bootstrapped library on cp:
-      defaultOutputDir + libGroup + "/src/:" +
+      defaultOutputDir + libGroup + "/src/" + sep +
       // as well as bootstrapped compiler:
-      defaultOutputDir + dotty1Group + "/dotty/:" +
+      defaultOutputDir + dotty1Group + "/dotty/" + sep +
       // and the other compiler dependenies:
-      Properties.compilerInterface + ":" + Properties.scalaLibrary + ":" + Properties.scalaAsm + ":" +
-      Properties.dottyInterfaces + ":" + Properties.jlineTerminal + ":" + Properties.jlineReader,
+      Properties.compilerInterface + sep + Properties.scalaLibrary + sep + Properties.scalaAsm + sep +
+      Properties.dottyInterfaces + sep + Properties.jlineTerminal + sep + Properties.jlineReader,
       Array("-Ycheck-reentrant", "-Yemit-tasty-in-class")
     )
 
+    val libraryDirs = List(Paths.get("library/src"), Paths.get("library/src-scala3"))
+    val librarySources = libraryDirs.flatMap(d => sources(Files.walk(d)))
+
     val lib =
-      compileDir("library/src",
+      compileList("src", librarySources,
         defaultOptions.and("-Ycheck-reentrant", "-strict", "-priorityclasspath", defaultOutputDir))(libGroup)
 
     val compilerDir = Paths.get("compiler/src")

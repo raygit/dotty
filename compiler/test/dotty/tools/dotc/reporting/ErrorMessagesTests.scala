@@ -30,8 +30,9 @@ class ErrorMessagesTests extends ErrorMessagesTest {
         implicit val ctx: Context = ictx
         assertMessageCount(1, messages)
         val errorMsg = messages.head
-        val CaseClassCannotExtendEnum(cls) :: Nil = messages
+        val CaseClassCannotExtendEnum(cls, parent) :: Nil = messages
         assertEquals("Bar", cls.name.show)
+        assertEquals("Foo", parent.name.show)
         assertEquals("<empty>", cls.owner.name.show)
       }
 
@@ -995,7 +996,7 @@ class ErrorMessagesTests extends ErrorMessagesTest {
         |}
         |
         |class B extends A {
-        |  rewrite def bar(): Unit = super.foo()
+        |  inline def bar(): Unit = super.foo()
         |}
       """.stripMargin
     }
@@ -1104,7 +1105,7 @@ class ErrorMessagesTests extends ErrorMessagesTest {
   @Test def noReturnInInline =
     checkMessagesAfter(FrontEnd.name) {
       """class BadFunction {
-        |  rewrite def usesReturn: Int = { return 42 }
+        |  inline def usesReturn: Int = { return 42 }
         |}
       """.stripMargin
     }.expect { (ictx, messages) =>

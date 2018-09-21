@@ -5,7 +5,7 @@ import scala.tasty.util.TreeTraverser
 
 object Macros {
 
-  rewrite def testDefinitions(): Unit = ~testDefinitionsImpl
+  inline def testDefinitions(): Unit = ~testDefinitionsImpl
 
   def testDefinitionsImpl(implicit tasty: Tasty): Expr[Unit] = {
     import tasty._
@@ -91,6 +91,7 @@ object Macros {
     printout(definitions.ObjectType.show)
     printout(definitions.NothingType.show)
     printout(definitions.NullType.show)
+    printout(definitions.StringType.show)
 
 
     '(println(~buff.result().mkString("\n").toExpr))
