@@ -218,6 +218,15 @@ class Definitions {
     lazy val Sys_errorR = SysPackage.moduleClass.requiredMethodRef(nme.error)
     def Sys_error(implicit ctx: Context) = Sys_errorR.symbol
 
+  lazy val TypelevelPackageObjectRef = ctx.requiredModuleRef("scala.typelevel.package")
+  lazy val TypelevelPackageObject = TypelevelPackageObjectRef.symbol.moduleClass
+    lazy val Typelevel_errorR = TypelevelPackageObjectRef.symbol.requiredMethodRef(nme.error)
+    def Typelevel_error(implicit ctx: Context) = Typelevel_errorR.symbol
+    lazy val Typelevel_constValueR = TypelevelPackageObjectRef.symbol.requiredMethodRef("constValue")
+    def Typelevel_constValue(implicit ctx: Context) = Typelevel_constValueR.symbol
+    lazy val Typelevel_constValueOptR = TypelevelPackageObjectRef.symbol.requiredMethodRef("constValueOpt")
+    def Typelevel_constValueOpt(implicit ctx: Context) = Typelevel_constValueOptR.symbol
+
   /** The `scalaShadowing` package is used to safely modify classes and
    *  objects in scala so that they can be used from dotty. They will
    *  be visible as members of the `scala` package, replacing any objects
@@ -422,6 +431,10 @@ class Definitions {
     def Seq_drop(implicit ctx: Context) = Seq_dropR.symbol
     lazy val Seq_lengthCompareR = SeqClass.requiredMethodRef(nme.lengthCompare)
     def Seq_lengthCompare(implicit ctx: Context) = Seq_lengthCompareR.symbol
+    lazy val Seq_lengthR = SeqClass.requiredMethodRef(nme.length)
+    def Seq_length(implicit ctx: Context) = Seq_lengthR.symbol
+    lazy val Seq_toSeqR = SeqClass.requiredMethodRef(nme.toSeq)
+    def Seq_toSeq(implicit ctx: Context) = Seq_toSeqR.symbol
 
   lazy val ArrayType: TypeRef = ctx.requiredClassRef("scala.Array")
   def ArrayClass(implicit ctx: Context) = ArrayType.symbol.asClass
@@ -708,6 +721,8 @@ class Definitions {
 
   lazy val TupleTypeRef = ctx.requiredClassRef("scala.Tuple")
   def TupleClass(implicit ctx: Context) = TupleTypeRef.symbol.asClass
+  lazy val NonEmptyTupleTypeRef = ctx.requiredClassRef("scala.NonEmptyTuple")
+  def NonEmptyTupleClass(implicit ctx: Context) = NonEmptyTupleTypeRef.symbol.asClass
 
   lazy val PairType = ctx.requiredClassRef("scala.*:")
   def PairClass(implicit ctx: Context) = PairType.symbol.asClass
@@ -883,6 +898,9 @@ class Definitions {
         None
     }
   }
+
+  final def isTypelevel_S(sym: Symbol)(implicit ctx: Context) =
+    sym.name == tpnme.S && sym.owner == TypelevelPackageObject
 
   // ----- Symbol sets ---------------------------------------------------
 
@@ -1213,7 +1231,7 @@ class Definitions {
   def isValueSubClass(sym1: Symbol, sym2: Symbol) =
     valueTypeEnc(sym2.asClass.name) % valueTypeEnc(sym1.asClass.name) == 0
 
-  lazy val erasedToObject = Set[Symbol](AnyClass, AnyValClass, TupleClass, SingletonClass)
+  lazy val erasedToObject = Set[Symbol](AnyClass, AnyValClass, TupleClass, NonEmptyTupleClass, SingletonClass)
 
   // ----- Initialization ---------------------------------------------------
 
