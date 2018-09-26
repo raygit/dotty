@@ -208,17 +208,17 @@ object Types {
       def loop(tp: Type): Boolean = tp match {
         case tp: TypeRef =>
           val sym = tp.symbol
-          if (sym.isClass) sym.derivesFrom(cls) else loop(tp.superType): @tailrec
+          if (sym.isClass) sym.derivesFrom(cls) else loop(tp.superType)
         case tp: AppliedType =>
           tp.superType.derivesFrom(cls)
         case tp: MatchType =>
           tp.bound.derivesFrom(cls) || tp.reduced.derivesFrom(cls)
         case tp: TypeProxy =>
-          loop(tp.underlying): @tailrec
+          loop(tp.underlying)
         case tp: AndType =>
-          loop(tp.tp1) || loop(tp.tp2): @tailrec
+          loop(tp.tp1) || loop(tp.tp2)
         case tp: OrType =>
-          loop(tp.tp1) && loop(tp.tp2): @tailrec
+          loop(tp.tp1) && loop(tp.tp2)
         case tp: JavaArrayType =>
           cls == defn.ObjectClass
         case _ =>
@@ -301,8 +301,12 @@ object Types {
     }
 
     /** Does this type occur as a part of type `that`? */
-    final def occursIn(that: Type)(implicit ctx: Context): Boolean =
-      that existsPart (this == _)
+    def occursIn(that: Type)(implicit ctx: Context): Boolean =
+      that.existsPart(this == _)
+
+    /** Does this type not refer to TypeParamRefs or uninstantiated TypeVars? */
+    final def isGround(implicit ctx: Context): Boolean =
+      (new isGroundAccumulator).apply(true, this)
 
     /** Is this a type of a repeated parameter? */
     def isRepeatedParam(implicit ctx: Context): Boolean =
@@ -403,16 +407,16 @@ object Types {
      */
     final def classSymbol(implicit ctx: Context): Symbol = this match {
       case ConstantType(constant) =>
-        constant.tpe.classSymbol: @tailrec
+        constant.tpe.classSymbol
       case tp: TypeRef =>
         val sym = tp.symbol
-        if (sym.isClass) sym else tp.superType.classSymbol: @tailrec
+        if (sym.isClass) sym else tp.superType.classSymbol
       case tp: ClassInfo =>
         tp.cls
       case tp: SingletonType =>
         NoSymbol
       case tp: TypeProxy =>
-        tp.underlying.classSymbol: @tailrec
+        tp.underlying.classSymbol
       case AndType(l, r) =>
         val lsym = l.classSymbol
         val rsym = r.classSymbol
@@ -436,9 +440,9 @@ object Types {
         tp.cls :: Nil
       case tp: TypeRef =>
         val sym = tp.symbol
-        if (sym.isClass) sym.asClass :: Nil else tp.superType.classSymbols: @tailrec
+        if (sym.isClass) sym.asClass :: Nil else tp.superType.classSymbols
       case tp: TypeProxy =>
-        tp.underlying.classSymbols: @tailrec
+        tp.underlying.classSymbols
       case AndType(l, r) =>
         l.classSymbols union r.classSymbols
       case OrType(l, r) =>
@@ -479,7 +483,7 @@ object Types {
       case tp: ClassInfo =>
         tp.decls
       case tp: TypeProxy =>
-        tp.underlying.decls: @tailrec
+        tp.underlying.decls
       case _ =>
         EmptyScope
     }
@@ -551,8 +555,12 @@ object Types {
           }
         case tp: AppliedType =>
           tp.tycon match {
-            case tc: TypeRef if tc.symbol.isClass =>
-              go(tc)
+            case tc: TypeRef =>
+              if (tc.symbol.isClass) go(tc)
+              else {
+                val normed = tp.tryNormalize
+                go(if (normed.exists) normed else tp.superType)
+              }
             case tc: HKTypeLambda =>
               goApplied(tp, tc)
             case _ =>
@@ -568,6 +576,9 @@ object Types {
           goParam(tp)
         case tp: SuperType =>
           goSuper(tp)
+        case tp: MatchType =>
+          val normed = tp.tryNormalize
+          go(if (normed.exists) normed else tp.underlying)
         case tp: TypeProxy =>
           go(tp.underlying)
         case tp: ClassInfo =>
@@ -725,7 +736,7 @@ object Types {
         val ns = tp.parent.memberNames(keepOnly, pre)
         if (keepOnly(pre, tp.refinedName)) ns + tp.refinedName else ns
       case tp: TypeProxy =>
-        tp.underlying.memberNames(keepOnly, pre): @tailrec
+        tp.underlying.memberNames(keepOnly, pre)
       case tp: AndType =>
         tp.tp1.memberNames(keepOnly, pre) | tp.tp2.memberNames(keepOnly, pre)
       case tp: OrType =>
@@ -1042,21 +1053,21 @@ object Types {
       case tp: TypeRef =>
         if (tp.symbol.isClass) tp
         else tp.info match {
-          case TypeAlias(alias) => alias.dealias1(keep): @tailrec
+          case TypeAlias(alias) => alias.dealias1(keep)
           case _ => tp
         }
       case app @ AppliedType(tycon, args) =>
         val tycon1 = tycon.dealias1(keep)
-        if (tycon1 ne tycon) app.superType.dealias1(keep): @tailrec
+        if (tycon1 ne tycon) app.superType.dealias1(keep)
         else this
       case tp: TypeVar =>
         val tp1 = tp.instanceOpt
-        if (tp1.exists) tp1.dealias1(keep): @tailrec else tp
+        if (tp1.exists) tp1.dealias1(keep) else tp
       case tp: AnnotatedType =>
         val tp1 = tp.parent.dealias1(keep)
         if (keep(tp)(ctx)) tp.derivedAnnotatedType(tp1, tp.annot) else tp1
       case tp: LazyRef =>
-        tp.ref.dealias1(keep): @tailrec
+        tp.ref.dealias1(keep)
       case _ => this
     }
 
@@ -3264,6 +3275,17 @@ object Types {
     private[this] var cachedSuper: Type = _
     private[this] var myStableHash: Byte = 0
 
+    private[this] var isGroundKnown: Boolean = false
+    private[this] var isGroundCache: Boolean = _
+
+    def isGround(acc: TypeAccumulator[Boolean])(implicit ctx: Context): Boolean = {
+      if (!isGroundKnown) {
+        isGroundCache = acc.foldOver(true, this)
+        isGroundKnown = true
+      }
+      isGroundCache
+    }
+
     override def underlying(implicit ctx: Context): Type = tycon
 
     override def superType(implicit ctx: Context): Type = {
@@ -3283,14 +3305,14 @@ object Types {
       case tycon: TypeRef =>
         def tryMatchAlias = tycon.info match {
           case MatchAlias(alias) =>
-            trace("normalize $this", typr, show = true) {
+            trace(i"normalize $this", typr, show = true) {
               alias.applyIfParameterized(args).tryNormalize
             }
           case _ =>
             NoType
         }
         if (defn.isTypelevel_S(tycon.symbol) && args.length == 1) {
-          trace("normalize S $this", typr, show = true) {
+          trace(i"normalize S $this", typr, show = true) {
             args.head.normalized match {
               case ConstantType(Constant(n: Int)) => ConstantType(Constant(n + 1))
               case none => tryMatchAlias
@@ -3406,6 +3428,11 @@ object Types {
     type BT = TypeLambda
     def kindString = "Type"
     def copyBoundType(bt: BT) = bt.paramRefs(paramNum)
+
+    /** Optimized version of occursIn, avoid quadratic blowup when solving
+     *  constraints over large ground types.
+     */
+    override def occursIn(that: Type)(implicit ctx: Context) = !that.isGround && super.occursIn(that)
 
     /** Looking only at the structure of `bound`, is one of the following true?
      *     - fromBelow and param <:< bound
@@ -3591,7 +3618,7 @@ object Types {
     def underlying(implicit ctx: Context): Type = bound
 
     private[this] var myReduced: Type = null
-    private[this] var reductionContext: mutable.Map[Type, TypeBounds] = null
+    private[this] var reductionContext: mutable.Map[Type, Type] = null
 
     override def tryNormalize(implicit ctx: Context): Type = reduced.normalized
 
@@ -3627,30 +3654,33 @@ object Types {
         }
       }
 
-      def isRelevant(tp: Type) = tp match {
-        case tp: TypeParamRef => ctx.typerState.constraint.entry(tp).exists
+      def isBounded(tp: Type) = tp match {
+        case tp: TypeParamRef =>
         case tp: TypeRef => ctx.gadt.bounds.contains(tp.symbol)
       }
 
-      def contextBounds(tp: Type): TypeBounds = tp match {
-        case tp: TypeParamRef => ctx.typerState.constraint.fullBounds(tp)
-        case tp: TypeRef => ctx.gadt.bounds(tp.symbol)
+      def contextInfo(tp: Type): Type = tp match {
+        case tp: TypeParamRef =>
+          val constraint = ctx.typerState.constraint
+          if (constraint.entry(tp).exists) constraint.fullBounds(tp)
+          else NoType
+        case tp: TypeRef =>
+          val bounds = ctx.gadt.bounds(tp.symbol)
+          if (bounds == null) NoType else bounds
+        case tp: TypeVar =>
+          tp.underlying
       }
 
       def updateReductionContext() = {
         reductionContext = new mutable.HashMap
-        for (tp <- cmp.footprint if isRelevant(tp))
-          reductionContext(tp) = contextBounds(tp)
+        for (tp <- cmp.footprint)
+          reductionContext(tp) = contextInfo(tp)
+        typr.println(i"footprint for $this $hashCode: ${cmp.footprint.toList.map(x => (x, contextInfo(x)))}%, %")
       }
 
       def upToDate =
-        cmp.footprint.forall { tp =>
-          !isRelevant(tp) || {
-            reductionContext.get(tp) match {
-              case Some(bounds) => bounds `eq` contextBounds(tp)
-              case None => false
-            }
-          }
+        reductionContext.keysIterator.forall { tp =>
+          reductionContext(tp) `eq` contextInfo(tp)
         }
 
       record("MatchType.reduce called")
@@ -3658,7 +3688,7 @@ object Types {
         record("MatchType.reduce computed")
         if (myReduced != null) record("MatchType.reduce cache miss")
         myReduced =
-          trace(i"reduce match type $this", typr, show = true) {
+          trace(i"reduce match type $this $hashCode", typr, show = true) {
             try
               if (defn.isBottomType(scrutinee)) defn.NothingType
               else if (reduceInParallel) reduceParallel(trackingCtx)
@@ -4765,6 +4795,17 @@ object Types {
             foldOver(x, tp)
         }
       }
+  }
+
+  class isGroundAccumulator(implicit ctx: Context) extends TypeAccumulator[Boolean] {
+    def apply(x: Boolean, tp: Type) = x && {
+      tp match {
+        case _: TypeParamRef => false
+        case tp: TypeVar => apply(x, tp.underlying)
+        case tp: AppliedType => tp.isGround(this)
+        case _ => foldOver(x, tp)
+      }
+    }
   }
 
   //   ----- Name Filters --------------------------------------------------
