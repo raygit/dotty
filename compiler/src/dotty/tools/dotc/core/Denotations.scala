@@ -2,10 +2,9 @@ package dotty.tools
 package dotc
 package core
 
-import SymDenotations.{ SymDenotation, ClassDenotation, NoDenotation }
+import SymDenotations.{ SymDenotation, ClassDenotation, NoDenotation, LazyType }
 import Contexts.{Context, ContextBase}
 import Names._
-import NameOps._
 import NameKinds._
 import StdNames._
 import Symbols.NoSymbol
@@ -15,14 +14,12 @@ import Periods._
 import Flags._
 import DenotTransformers._
 import Decorators._
-import dotc.transform.Erasure
 import printing.Texts._
 import printing.Printer
 import io.AbstractFile
 import config.Config
 import util.common._
 import collection.mutable.ListBuffer
-import Decorators.SymbolIteratorDecorator
 
 /** Denotations represent the meaning of symbols and named types.
  *  The following diagram shows how the principal types of denotations
@@ -75,7 +72,7 @@ object Denotations {
   /** A PreDenotation represents a group of single denotations or a single multi-denotation
    *  It is used as an optimization to avoid forming MultiDenotations too eagerly.
    */
-  abstract class PreDenotation extends util.DotClass {
+  abstract class PreDenotation {
 
     /** A denotation in the group exists */
     def exists: Boolean
@@ -171,12 +168,19 @@ object Denotations {
    *
    *  @param symbol  The referencing symbol, or NoSymbol is none exists
    */
-  abstract class Denotation(val symbol: Symbol) extends PreDenotation with printing.Showable {
-
+  abstract class Denotation(val symbol: Symbol, protected var myInfo: Type) extends PreDenotation with printing.Showable {
     type AsSeenFromResult <: Denotation
 
-    /** The type info of the denotation, exists only for non-overloaded denotations */
-    def info(implicit ctx: Context): Type
+    /** The type info.
+     *  The info is an instance of TypeType iff this is a type denotation
+     *  Uncompleted denotations set myInfo to a LazyType.
+     */
+    final def info(implicit ctx: Context): Type = {
+      def completeInfo = { // Written this way so that `info` is small enough to be inlined
+        this.asInstanceOf[SymDenotation].completeFrom(myInfo.asInstanceOf[LazyType]); info
+      }
+      if (myInfo.isInstanceOf[LazyType]) completeInfo else myInfo
+    }
 
     /** The type info, or, if this is a SymDenotation where the symbol
      *  is not yet completed, the completer
@@ -193,7 +197,7 @@ object Denotations {
     def isTerm: Boolean = !isType
 
     /** Is this denotation overloaded? */
-    final def isOverloaded = isInstanceOf[MultiDenotation]
+    final def isOverloaded: Boolean = isInstanceOf[MultiDenotation]
 
     /** Denotation points to unique symbol; false for overloaded denotations
      * and JointRef denotations.
@@ -225,7 +229,7 @@ object Denotations {
     def mapInfo(f: Type => Type)(implicit ctx: Context): Denotation
 
     /** If this denotation does not exist, fallback to alternative */
-    final def orElse(that: => Denotation) = if (this.exists) this else that
+    final def orElse(that: => Denotation): Denotation = if (this.exists) this else that
 
     /** The set of alternative single-denotations making up this denotation */
     final def alternatives: List[SingleDenotation] = altsWith(alwaysTrue)
@@ -332,21 +336,8 @@ object Denotations {
     }
 
     /** Handle merge conflict by throwing a `MergeError` exception */
-    private def mergeConflict(tp1: Type, tp2: Type, that: Denotation)(implicit ctx: Context): Type = {
-      def showSymbol(sym: Symbol): String = if (sym.exists) sym.showLocated else "[unknown]"
-      def showType(tp: Type) = tp match {
-        case ClassInfo(_, cls, _, _, _) => cls.showLocated
-        case bounds: TypeBounds => i"type bounds $bounds"
-        case _ => tp.show
-      }
-      val msg =
-        s"""cannot merge
-           |  ${showSymbol(this.symbol)} of type ${showType(tp1)}  and
-           |  ${showSymbol(that.symbol)} of type ${showType(tp2)}
-           """
-      if (true) throw new MergeError(msg, tp1, tp2)
-      else throw new Error(msg) // flip condition for debugging
-    }
+    private def mergeConflict(tp1: Type, tp2: Type, that: Denotation)(implicit ctx: Context): Type =
+      throw new MergeError(this.symbol, that.symbol, tp1, tp2, NoPrefix)
 
     /** Merge parameter names of lambda types. If names in corresponding positions match, keep them,
      *  otherwise generate new synthetic names.
@@ -403,33 +394,48 @@ object Denotations {
               case tp2: TypeBounds if tp2 contains tp1 => tp1
               case _ => mergeConflict(tp1, tp2, that)
             }
-          case tp1: MethodOrPoly =>
+
+          // Two remedial strategies:
+          //
+          //  1. Prefer method types over poly types. This is necessary to handle
+          //     overloaded definitions like the following
+          //
+          //        def ++ [B >: A](xs: C[B]): D[B]
+          //        def ++ (xs: C[A]): D[A]
+          //
+          //     (Code like this is found in the collection strawman)
+          //
+          // 2. In the case of two method types or two polytypes with matching
+          //    parameters and implicit status, merge corresponding parameter
+          //    and result types.
+          case tp1: MethodType =>
             tp2 match {
-              case tp2: MethodOrPoly =>
-                // Two remedial strategies:
-                //
-                //  1. Prefer method types over poly types. This is necessary to handle
-                //     overloaded definitions like the following
-                //
-                //        def ++ [B >: A](xs: C[B]): D[B]
-                //        def ++ (xs: C[A]): D[A]
-                //
-                //     (Code like this is found in the collection strawman)
-                //
-                // 2. In the case of two method types or two polytypes with matching
-                //    parameters and implicit status, merge corresppnding parameter
-                //    and result types.
-                if (tp1.isInstanceOf[PolyType] && tp2.isInstanceOf[MethodType]) tp2
-                else if (tp2.isInstanceOf[PolyType] && tp1.isInstanceOf[MethodType]) tp1
-                else if (ctx.typeComparer.matchingParams(tp1, tp2) &&
-                         tp1.isImplicitMethod == tp2.isImplicitMethod)
-                  tp1.derivedLambdaType(
-                    mergeParamNames(tp1, tp2), tp1.paramInfos,
-                    infoMeet(tp1.resultType, tp2.resultType.subst(tp2, tp1)))
-                else mergeConflict(tp1, tp2, that)
+              case tp2: PolyType =>
+                tp1
+              case tp2: MethodType if ctx.typeComparer.matchingMethodParams(tp1, tp2) &&
+                  tp1.isImplicitMethod == tp2.isImplicitMethod =>
+                tp1.derivedLambdaType(
+                  mergeParamNames(tp1, tp2),
+                  tp1.paramInfos,
+                  infoMeet(tp1.resultType, tp2.resultType.subst(tp2, tp1)))
               case _ =>
                 mergeConflict(tp1, tp2, that)
             }
+          case tp1: PolyType =>
+            tp2 match {
+              case tp2: MethodType =>
+                tp2
+              case tp2: PolyType if ctx.typeComparer.matchingPolyParams(tp1, tp2) =>
+                tp1.derivedLambdaType(
+                  mergeParamNames(tp1, tp2),
+                  tp1.paramInfos.zipWithConserve(tp2.paramInfos) { (p1, p2) =>
+                    infoMeet(p1,  p2.subst(tp2, tp1)).bounds
+                  },
+                  infoMeet(tp1.resultType, tp2.resultType.subst(tp2, tp1)))
+              case _ =>
+                mergeConflict(tp1, tp2, that)
+            }
+
           case _ =>
             tp1 & tp2
         }
@@ -488,7 +494,9 @@ object Denotations {
          *   4. The access boundary of sym2 is properly contained in the access
          *      boundary of sym1. For protected access, we count the enclosing
          *      package as access boundary.
-         *   5. sym1 a method but sym2 is not.
+         *   5. sym1 is a method but sym2 is not.
+         *   6. sym1 is a non-polymorphic method but sym2 is a polymorphic method.
+         *      (to be consistent with infoMeet, see #4819)
          *  The aim of these criteria is to give some disambiguation on access which
          *   - does not depend on textual order or other arbitrary choices
          *   - minimizes raising of doubleDef errors
@@ -501,7 +509,9 @@ object Denotations {
               (!sym2.isAsConcrete(sym1) ||
                 precedes(sym1.owner, sym2.owner) ||
                 accessBoundary(sym2).isProperlyContainedIn(accessBoundary(sym1)) ||
+                sym2.is(Bridge) && !sym1.is(Bridge) ||
                 sym1.is(Method) && !sym2.is(Method)) ||
+                sym1.info.isInstanceOf[MethodType] && sym2.info.isInstanceOf[PolyType] ||
               sym1.info.isErroneous)
 
         /** Sym preference provided types also override */
@@ -537,8 +547,7 @@ object Denotations {
                   else if (pre.widen.classSymbol.is(Scala2x) || ctx.scala2Mode)
                     info1 // follow Scala2 linearization -
                   // compare with way merge is performed in SymDenotation#computeMembersNamed
-                  else
-                    throw new MergeError(s"${ex.getMessage} as members of type ${pre.show}", ex.tp1, ex.tp2)
+                  else throw new MergeError(ex.sym1, ex.sym2, ex.tp1, ex.tp2, pre)
               }
             new JointRefDenotation(sym, jointInfo, denot1.validFor & denot2.validFor)
           }
@@ -579,13 +588,27 @@ object Denotations {
             case tp2: TypeBounds if tp2 contains tp1 => tp2
             case _ => mergeConflict(tp1, tp2, that)
           }
-        case tp1: MethodOrPoly =>
+        case tp1: MethodType =>
           tp2 match {
-            case tp2: MethodOrPoly
-            if ctx.typeComparer.matchingParams(tp1, tp2) &&
+            case tp2: MethodType
+            if ctx.typeComparer.matchingMethodParams(tp1, tp2) &&
                tp1.isImplicitMethod == tp2.isImplicitMethod =>
               tp1.derivedLambdaType(
-                mergeParamNames(tp1, tp2), tp1.paramInfos,
+                mergeParamNames(tp1, tp2),
+                tp1.paramInfos,
+                tp1.resultType | tp2.resultType.subst(tp2, tp1))
+            case _ =>
+              mergeConflict(tp1, tp2, that)
+          }
+        case tp1: PolyType =>
+          tp2 match {
+            case tp2: PolyType
+            if ctx.typeComparer.matchingPolyParams(tp1, tp2) =>
+              tp1.derivedLambdaType(
+                mergeParamNames(tp1, tp2),
+                tp1.paramInfos.zipWithConserve(tp2.paramInfos) { (p1, p2) =>
+                  (p1 | p2.subst(tp2, tp1)).bounds
+                },
                 tp1.resultType | tp2.resultType.subst(tp2, tp1))
             case _ =>
               mergeConflict(tp1, tp2, that)
@@ -645,8 +668,8 @@ object Denotations {
       }
     }
 
-    final def asSingleDenotation = asInstanceOf[SingleDenotation]
-    final def asSymDenotation = asInstanceOf[SymDenotation]
+    final def asSingleDenotation: SingleDenotation = asInstanceOf[SingleDenotation]
+    final def asSymDenotation: SymDenotation = asInstanceOf[SymDenotation]
 
     def toText(printer: Printer): Text = printer.toText(this)
 
@@ -657,7 +680,7 @@ object Denotations {
   }
 
   /** A non-overloaded denotation */
-  abstract class SingleDenotation(symbol: Symbol) extends Denotation(symbol) {
+  abstract class SingleDenotation(symbol: Symbol, initInfo: Type) extends Denotation(symbol, initInfo) {
     protected def newLikeThis(symbol: Symbol, info: Type): SingleDenotation
 
     final def name(implicit ctx: Context): Name = symbol.name
@@ -682,7 +705,7 @@ object Denotations {
     def mapInfo(f: Type => Type)(implicit ctx: Context): SingleDenotation =
       derivedSingleDenotation(symbol, f(info))
 
-    def orElse(that: => SingleDenotation) = if (this.exists) this else that
+    def orElse(that: => SingleDenotation): SingleDenotation = if (this.exists) this else that
 
     def altsWith(p: Symbol => Boolean): List[SingleDenotation] =
       if (exists && p(symbol)) this :: Nil else Nil
@@ -727,8 +750,8 @@ object Denotations {
 
     private[this] var myValidFor: Period = Nowhere
 
-    def validFor = myValidFor
-    def validFor_=(p: Period) = {
+    def validFor: Period = myValidFor
+    def validFor_=(p: Period): Unit = {
       myValidFor = p
       symbol.invalidateDenotCache()
     }
@@ -872,12 +895,12 @@ object Denotations {
           } else {
             //println(s"might need new denot for $cur, valid for ${cur.validFor} at $currentPeriod")
             // not found, cur points to highest existing variant
-            val nextTransformerId = ctx.nextDenotTransformerId(cur.validFor.lastPhaseId)
+            val nextTransformerId = ctx.base.nextDenotTransformerId(cur.validFor.lastPhaseId)
             if (currentPeriod.lastPhaseId <= nextTransformerId)
               cur.validFor = Period(currentPeriod.runId, cur.validFor.firstPhaseId, nextTransformerId)
             else {
               var startPid = nextTransformerId + 1
-              val transformer = ctx.denotTransformers(nextTransformerId)
+              val transformer = ctx.base.denotTransformers(nextTransformerId)
               //println(s"transforming $this with $transformer")
               try {
                 next = transformer.transform(cur)(ctx.withPhase(transformer))
@@ -993,7 +1016,7 @@ object Denotations {
       nextInRun = newd
     }
 
-    def staleSymbolError(implicit ctx: Context) =
+    def staleSymbolError(implicit ctx: Context): Nothing =
       throw new StaleSymbol(staleSymbolMsg)
 
     def staleSymbolMsg(implicit ctx: Context): String = {
@@ -1023,9 +1046,9 @@ object Denotations {
     /** Show declaration string; useful for showing declarations
      *  as seen from subclasses.
      */
-    def showDcl(implicit ctx: Context): String = ctx.dclText(this).show
+    def showDcl(implicit ctx: Context): String = ctx.printer.dclText(this).show
 
-    override def toString =
+    override def toString: String =
       if (symbol == NoSymbol) symbol.toString
       else s"<SingleDenotation of type $infoOrCompleter>"
 
@@ -1044,8 +1067,8 @@ object Denotations {
 
     // ------ PreDenotation ops ----------------------------------------------
 
-    final def first = this
-    final def last = this
+    final def first: SingleDenotation = this
+    final def last: SingleDenotation = this
 
     final def matches(other: SingleDenotation)(implicit ctx: Context): Boolean = {
       val d = signature.matchDegree(other.signature)
@@ -1081,16 +1104,15 @@ object Denotations {
     }
   }
 
-  abstract class NonSymSingleDenotation(symbol: Symbol) extends SingleDenotation(symbol) {
-    def infoOrCompleter: Type
-    def info(implicit ctx: Context) = infoOrCompleter
-    def isType = infoOrCompleter.isInstanceOf[TypeType]
+  abstract class NonSymSingleDenotation(symbol: Symbol, initInfo: Type) extends SingleDenotation(symbol, initInfo) {
+    def infoOrCompleter: Type = initInfo
+    def isType: Boolean = infoOrCompleter.isInstanceOf[TypeType]
   }
 
   class UniqueRefDenotation(
     symbol: Symbol,
-    val infoOrCompleter: Type,
-    initValidFor: Period) extends NonSymSingleDenotation(symbol) {
+    initInfo: Type,
+    initValidFor: Period) extends NonSymSingleDenotation(symbol, initInfo) {
     validFor = initValidFor
     override def hasUniqueSym: Boolean = true
     protected def newLikeThis(s: Symbol, i: Type): SingleDenotation = new UniqueRefDenotation(s, i, validFor)
@@ -1098,17 +1120,16 @@ object Denotations {
 
   class JointRefDenotation(
     symbol: Symbol,
-    val infoOrCompleter: Type,
-    initValidFor: Period) extends NonSymSingleDenotation(symbol) {
+    initInfo: Type,
+    initValidFor: Period) extends NonSymSingleDenotation(symbol, initInfo) {
     validFor = initValidFor
-    override def hasUniqueSym = false
+    override def hasUniqueSym: Boolean = false
     protected def newLikeThis(s: Symbol, i: Type): SingleDenotation = new JointRefDenotation(s, i, validFor)
   }
 
-  class ErrorDenotation(implicit ctx: Context) extends NonSymSingleDenotation(NoSymbol) {
-    override def exists = false
-    override def hasUniqueSym = false
-    def infoOrCompleter = NoType
+  class ErrorDenotation(implicit ctx: Context) extends NonSymSingleDenotation(NoSymbol, NoType) {
+    override def exists: Boolean = false
+    override def hasUniqueSym: Boolean = false
     validFor = Period.allInRun(ctx.runId)
     protected def newLikeThis(s: Symbol, i: Type): SingleDenotation = this
   }
@@ -1136,21 +1157,15 @@ object Denotations {
   def doubleDefError(denot1: Denotation, denot2: Denotation, pre: Type = NoPrefix)(implicit ctx: Context): Nothing = {
     val sym1 = denot1.symbol
     val sym2 = denot2.symbol
-    def fromWhere = if (pre == NoPrefix) "" else i"\nwhen seen as members of $pre"
-    val msg =
-      if (denot1.isTerm)
-        i"""cannot merge
-           |  $sym1: ${sym1.info}  and
-           |  $sym2: ${sym2.info};
-           |they are both defined in ${sym1.owner} but have matching signatures
-           |  ${denot1.info} and
-           |  ${denot2.info}$fromWhere"""
-      else
-        i"""cannot merge
-           |  $sym1 ${denot1.info}
-           |  $sym2 ${denot2.info}
-           |they are conflicting definitions$fromWhere"""
-    throw new MergeError(msg, denot2.info, denot2.info)
+    if (denot1.isTerm)
+      throw new MergeError(sym1, sym2, sym1.info, sym2.info, pre) {
+        override def addendum(implicit ctx: Context) =
+          i"""
+             |they are both defined in ${sym1.owner} but have matching signatures
+             |  ${denot1.info} and
+             |  ${denot2.info}${super.addendum}"""
+        }
+    else throw new MergeError(sym1, sym2, denot1.info, denot2.info, pre)
   }
 
   // --- Overloaded denotations and predenotations -------------------------------------------------
@@ -1160,8 +1175,8 @@ object Denotations {
     def denot2: PreDenotation
 
     assert(denot1.exists && denot2.exists, s"Union of non-existing denotations ($denot1) and ($denot2)")
-    def first = denot1.first
-    def last = denot2.last
+    def first: Denotation = denot1.first
+    def last: Denotation = denot2.last
     def matches(other: SingleDenotation)(implicit ctx: Context): Boolean =
       denot1.matches(other) || denot2.matches(other)
     def filterWithPredicate(p: SingleDenotation => Boolean): PreDenotation =
@@ -1172,16 +1187,16 @@ object Denotations {
       derivedUnion(denot1.mapInherited(owndenot, prevdenot, pre), denot2.mapInherited(owndenot, prevdenot, pre))
     def filterExcluded(excluded: FlagSet)(implicit ctx: Context): PreDenotation =
       derivedUnion(denot1.filterExcluded(excluded), denot2.filterExcluded(excluded))
-    protected def derivedUnion(denot1: PreDenotation, denot2: PreDenotation) =
+    protected def derivedUnion(denot1: PreDenotation, denot2: PreDenotation): PreDenotation =
       if ((denot1 eq this.denot1) && (denot2 eq this.denot2)) this
       else denot1 union denot2
   }
 
   final case class DenotUnion(denot1: PreDenotation, denot2: PreDenotation) extends MultiPreDenotation {
-    def exists = true
-    def toDenot(pre: Type)(implicit ctx: Context) =
+    def exists: Boolean = true
+    def toDenot(pre: Type)(implicit ctx: Context): Denotation =
       (denot1 toDenot pre) & (denot2 toDenot pre, pre)
-    def containsSym(sym: Symbol) =
+    def containsSym(sym: Symbol): Boolean =
       (denot1 containsSym sym) || (denot2 containsSym sym)
     type AsSeenFromResult = PreDenotation
     def computeAsSeenFrom(pre: Type)(implicit ctx: Context): PreDenotation =
@@ -1190,14 +1205,13 @@ object Denotations {
 
   /** An overloaded denotation consisting of the alternatives of both given denotations.
    */
-  case class MultiDenotation(denot1: Denotation, denot2: Denotation) extends Denotation(NoSymbol) with MultiPreDenotation {
-    final def infoOrCompleter = multiHasNot("info")
-    final def info(implicit ctx: Context) = infoOrCompleter
-    final def validFor = denot1.validFor & denot2.validFor
-    final def isType = false
-    final def hasUniqueSym = false
-    final def name(implicit ctx: Context) = denot1.name
-    final def signature(implicit ctx: Context) = Signature.OverloadedSignature
+  case class MultiDenotation(denot1: Denotation, denot2: Denotation) extends Denotation(NoSymbol, NoType) with MultiPreDenotation {
+    final def infoOrCompleter: Type = multiHasNot("info")
+    final def validFor: Period = denot1.validFor & denot2.validFor
+    final def isType: Boolean = false
+    final def hasUniqueSym: Boolean = false
+    final def name(implicit ctx: Context): Name = denot1.name
+    final def signature(implicit ctx: Context): Signature = Signature.OverloadedSignature
     def atSignature(sig: Signature, site: Type, relaxed: Boolean)(implicit ctx: Context): Denotation =
       if (sig eq Signature.OverloadedSignature) this
       else derivedUnionDenotation(denot1.atSignature(sig, site, relaxed), denot2.atSignature(sig, site, relaxed))
@@ -1234,7 +1248,7 @@ object Denotations {
     type AsSeenFromResult = Denotation
     def computeAsSeenFrom(pre: Type)(implicit ctx: Context): Denotation =
       derivedUnionDenotation(denot1.asSeenFrom(pre), denot2.asSeenFrom(pre))
-    override def toString = alternatives.mkString(" <and> ")
+    override def toString: String = alternatives.mkString(" <and> ")
 
     private def multiHasNot(op: String): Nothing =
       throw new UnsupportedOperationException(
@@ -1311,6 +1325,6 @@ object Denotations {
   /** An exception for accessing symbols that are no longer valid in current run */
   class StaleSymbol(msg: => String) extends Exception {
     util.Stats.record("stale symbol")
-    override def getMessage() = msg
+    override def getMessage(): String = msg
   }
 }

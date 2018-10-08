@@ -15,35 +15,18 @@ object ErrorReporting {
 
   import tpd._
 
+  def errorTree(tree: untpd.Tree, msg: => Message, pos: Position)(implicit ctx: Context): tpd.Tree =
+    tree withType errorType(msg, pos)
+
   def errorTree(tree: untpd.Tree, msg: => Message)(implicit ctx: Context): tpd.Tree =
-    tree withType errorType(msg, tree.pos)
+    errorTree(tree, msg, tree.pos)
 
   def errorType(msg: => Message, pos: Position)(implicit ctx: Context): ErrorType = {
     ctx.error(msg, pos)
     ErrorType(msg)
   }
 
-  def cyclicErrorMsg(ex: CyclicReference)(implicit ctx: Context) = {
-    val cycleSym = ex.denot.symbol
-    def errorMsg(msg: Message, cx: Context): Message =
-      if (cx.mode is Mode.InferringReturnType) {
-        cx.tree match {
-          case tree: untpd.DefDef if !tree.tpt.typeOpt.exists =>
-            OverloadedOrRecursiveMethodNeedsResultType(tree.name)
-          case tree: untpd.ValDef if !tree.tpt.typeOpt.exists =>
-            RecursiveValueNeedsResultType(tree.name)
-          case _ =>
-            errorMsg(msg, cx.outer)
-        }
-      } else msg
-
-    if (cycleSym.is(Implicit, butNot = Method) && cycleSym.owner.isTerm)
-      CyclicReferenceInvolvingImplicit(cycleSym)
-    else
-      errorMsg(ex.toMessage, ctx)
-  }
-
-  def wrongNumberOfTypeArgs(fntpe: Type, expectedArgs: List[ParamInfo], actual: List[untpd.Tree], pos: Position)(implicit ctx: Context) =
+  def wrongNumberOfTypeArgs(fntpe: Type, expectedArgs: List[ParamInfo], actual: List[untpd.Tree], pos: Position)(implicit ctx: Context): ErrorType =
     errorType(WrongNumberOfTypeArgs(fntpe, expectedArgs, actual)(ctx), pos)
 
   class Errors(implicit ctx: Context) {
@@ -68,7 +51,7 @@ object ErrorReporting {
         em"expected type $tp"
     }
 
-    def anonymousTypeMemberStr(tpe: Type) = {
+    def anonymousTypeMemberStr(tpe: Type): String = {
       val kind = tpe match {
           case _: TypeBounds => "type with bounds"
           case _: MethodOrPoly => "method"
@@ -77,7 +60,7 @@ object ErrorReporting {
         em"$kind $tpe"
     }
 
-    def overloadedAltsStr(alts: List[SingleDenotation]) =
+    def overloadedAltsStr(alts: List[SingleDenotation]): String =
       em"overloaded alternatives of ${denotStr(alts.head)} with types\n" +
       em" ${alts map (_.info)}%\n %"
 
@@ -93,7 +76,7 @@ object ErrorReporting {
 
     def exprStr(tree: Tree): String = refStr(tree.tpe)
 
-    def takesNoParamsStr(tree: Tree, kind: String) =
+    def takesNoParamsStr(tree: Tree, kind: String): String =
       if (tree.tpe.widen.exists)
         i"${exprStr(tree)} does not take ${kind}parameters"
       else
@@ -109,7 +92,7 @@ object ErrorReporting {
     }
 
     /** A subtype log explaining why `found` does not conform to `expected` */
-    def whyNoMatchStr(found: Type, expected: Type) = {
+    def whyNoMatchStr(found: Type, expected: Type): String = {
       def dropJavaMethod(tp: Type): Type = tp match {
         case tp: PolyType =>
           tp.derivedLambdaType(resType = dropJavaMethod(tp.resultType))
@@ -130,7 +113,7 @@ object ErrorReporting {
         ""
     }
 
-    def typeMismatchMsg(found: Type, expected: Type, postScript: String = "") = {
+    def typeMismatchMsg(found: Type, expected: Type, postScript: String = ""): TypeMismatch = {
       // replace constrained TypeParamRefs and their typevars by their bounds where possible
       // the idea is that if the bounds are also not-subtypes of each other to report
       // the type mismatch on the bounds instead of the original TypeParamRefs, since

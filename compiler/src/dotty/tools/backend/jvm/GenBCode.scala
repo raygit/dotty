@@ -10,6 +10,7 @@ import scala.tools.asm.CustomAttr
 import scala.tools.nsc.backend.jvm._
 import dotty.tools.dotc.transform.SymUtils._
 import dotty.tools.dotc.interfaces
+import dotty.tools.dotc.util.SourceFile
 import java.util.Optional
 
 import dotty.tools.dotc.core._
@@ -20,34 +21,30 @@ import Decorators._
 
 import java.io.DataOutputStream
 
-import dotty.tools.io.Directory
 
 import scala.tools.asm
 import scala.tools.asm.tree._
 import tpd._
 import StdNames._
+import dotty.tools.dotc.core.tasty.{TastyBuffer, TastyHeaderUnpickler}
 import dotty.tools.io._
 
 class GenBCode extends Phase {
   def phaseName: String = GenBCode.name
   private val entryPoints = new mutable.HashSet[Symbol]()
-  def registerEntryPoint(sym: Symbol) = entryPoints += sym
+  def registerEntryPoint(sym: Symbol): Unit = entryPoints += sym
 
   private val superCallsMap = newMutableSymbolMap[Set[ClassSymbol]]
-  def registerSuperCall(sym: Symbol, calls: ClassSymbol) = {
+  def registerSuperCall(sym: Symbol, calls: ClassSymbol): Unit = {
     val old = superCallsMap.getOrElse(sym, Set.empty)
     superCallsMap.update(sym, old + calls)
   }
 
   private[this] var myOutput: AbstractFile = _
 
-  protected def outputDir(implicit ctx: Context): AbstractFile = {
-    if (myOutput eq null) {
-      val path = Directory(ctx.settings.outputDir.value)
-      myOutput =
-        if (path.extension == "jar") JarArchive.create(path)
-        else new PlainDirectory(path)
-    }
+  private def outputDir(implicit ctx: Context): AbstractFile = {
+    if (myOutput eq null)
+      myOutput = ctx.settings.outputDir.value
     myOutput
   }
 
@@ -57,7 +54,7 @@ class GenBCode extends Phase {
     entryPoints.clear()
   }
 
-  override def runOn(units: List[CompilationUnit])(implicit ctx: Context) = {
+  override def runOn(units: List[CompilationUnit])(implicit ctx: Context): List[CompilationUnit] = {
     try super.runOn(units)
     finally myOutput match {
       case jar: JarArchive =>
@@ -73,9 +70,9 @@ object GenBCode {
 
 class GenBCodePipeline(val entryPoints: List[Symbol], val int: DottyBackendInterface)(implicit val ctx: Context) extends BCodeSyncAndTry {
 
-  var tree: Tree = _
+  private[this] var tree: Tree = _
 
-  val sourceFile = ctx.compilationUnit.source
+  private[this] val sourceFile: SourceFile = ctx.compilationUnit.source
 
   /** Convert a `dotty.tools.io.AbstractFile` into a
    *  `dotty.tools.dotc.interfaces.AbstractFile`.
@@ -98,7 +95,7 @@ class GenBCodePipeline(val entryPoints: List[Symbol], val int: DottyBackendInter
     /* ---------------- q1 ---------------- */
 
     case class Item1(arrivalPos: Int, cd: TypeDef, cunit: CompilationUnit) {
-      def isPoison = { arrivalPos == Int.MaxValue }
+      def isPoison: Boolean = { arrivalPos == Int.MaxValue }
     }
     private val poison1 = Item1(Int.MaxValue, null, ctx.compilationUnit)
     private val q1 = new java.util.LinkedList[Item1]
@@ -111,7 +108,7 @@ class GenBCodePipeline(val entryPoints: List[Symbol], val int: DottyBackendInter
     case class Item2(arrivalPos: Int,
                      mirror:     SubItem2,
                      plain:      SubItem2) {
-      def isPoison = { arrivalPos == Int.MaxValue }
+      def isPoison: Boolean = { arrivalPos == Int.MaxValue }
     }
 
     private val poison2 = Item2(Int.MaxValue, null, null)
@@ -136,7 +133,7 @@ class GenBCodePipeline(val entryPoints: List[Symbol], val int: DottyBackendInter
                      mirror:     SubItem3,
                      plain:      SubItem3) {
 
-      def isPoison  = { arrivalPos == Int.MaxValue }
+      def isPoison: Boolean  = { arrivalPos == Int.MaxValue }
     }
     private val i3comparator = new java.util.Comparator[Item3] {
       override def compare(a: Item3, b: Item3) = {
@@ -195,7 +192,7 @@ class GenBCodePipeline(val entryPoints: List[Symbol], val int: DottyBackendInter
        *  enqueues them in queue-2.
        *
        */
-      def visit(item: Item1) = {
+      def visit(item: Item1): Boolean = {
         val Item1(arrivalPos, cd, cunit) = item
         val claszSymbol = cd.symbol
 
@@ -220,14 +217,22 @@ class GenBCodePipeline(val entryPoints: List[Symbol], val int: DottyBackendInter
           for (binary <- ctx.compilationUnit.pickled.get(claszSymbol.asClass)) {
             val store = if (mirrorC ne null) mirrorC else plainC
             val tasty =
-              if (ctx.settings.YemitTasty.value) {
+              if (!ctx.settings.YemitTastyInClass.value) {
                 val outTastyFile = getFileForClassfile(outF, store.name, ".tasty")
                 val outstream = new DataOutputStream(outTastyFile.bufferedOutput)
                 try outstream.write(binary)
                 finally outstream.close()
-                // TASTY attribute is created but 0 bytes are stored in it.
-                // A TASTY attribute has length 0 if and only if the .tasty file exists.
-                Array.empty[Byte]
+
+                val uuid = new TastyHeaderUnpickler(binary).readHeader()
+                val lo = uuid.getMostSignificantBits
+                val hi = uuid.getLeastSignificantBits
+
+                // TASTY attribute is created but only the UUID bytes are stored in it.
+                // A TASTY attribute has length 16 if and only if the .tasty file exists.
+                val buffer = new TastyBuffer(16)
+                buffer.writeUncompressedLong(lo)
+                buffer.writeUncompressedLong(hi)
+                buffer.bytes
               } else {
                 // Create an empty file to signal that a tasty section exist in the corresponding .class
                 // This is much cheaper and simpler to check than doing classfile parsing
@@ -346,7 +351,7 @@ class GenBCodePipeline(val entryPoints: List[Symbol], val int: DottyBackendInter
 
     } // end of class BCodePhase.Worker2
 
-    var arrivalPos = 0
+    var arrivalPos: Int = 0
 
     /*
      *  A run of the BCodePhase phase comprises:
@@ -359,7 +364,7 @@ class GenBCodePipeline(val entryPoints: List[Symbol], val int: DottyBackendInter
      *    (c) tear down (closing the classfile-writer and clearing maps)
      *
      */
-    def run(t: Tree) = {
+    def run(t: Tree): Unit = {
       this.tree = t
 
       // val bcodeStart = Statistics.startTimer(BackendStats.bcodeTimer)

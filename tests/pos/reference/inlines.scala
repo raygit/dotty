@@ -22,7 +22,6 @@ object Logger {
 
 object Test {
   import Logger._
-
   def factorial(n: BigInt): BigInt =
     log(s"factorial($n)") {
       if (n == 0) 1

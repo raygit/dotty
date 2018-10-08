@@ -1,12 +1,12 @@
 package dotty.tools.dotc
 package config
 
-import collection.mutable.{ ArrayBuffer }
-import scala.util.{ Try, Success, Failure }
+import collection.mutable.ArrayBuffer
+import scala.util.{ Success, Failure }
 import reflect.ClassTag
 import core.Contexts._
 import scala.annotation.tailrec
-import dotty.tools.io.{ Directory, File, Path }
+import dotty.tools.io.{ AbstractFile, Directory, JarArchive, PlainDirectory }
 
 // import annotation.unchecked
   // Dotty deviation: Imports take precedence over definitions in enclosing package
@@ -16,18 +16,19 @@ import language.existentials
 
 object Settings {
 
-  val BooleanTag = ClassTag.Boolean
-  val IntTag = ClassTag.Int
-  val StringTag = ClassTag(classOf[String])
-  val ListTag = ClassTag(classOf[List[_]])
-  val VersionTag = ClassTag(classOf[ScalaVersion])
-  val OptionTag = ClassTag(classOf[Option[_]])
+  val BooleanTag: ClassTag[Boolean]      = ClassTag.Boolean
+  val IntTag: ClassTag[Int]              = ClassTag.Int
+  val StringTag: ClassTag[String]        = ClassTag(classOf[String])
+  val ListTag: ClassTag[List[_]]         = ClassTag(classOf[List[_]])
+  val VersionTag: ClassTag[ScalaVersion] = ClassTag(classOf[ScalaVersion])
+  val OptionTag: ClassTag[Option[_]]     = ClassTag(classOf[Option[_]])
+  val OutputTag: ClassTag[AbstractFile]  = ClassTag(classOf[AbstractFile])
 
   class SettingsState(initialValues: Seq[Any]) {
     private[this] var values = ArrayBuffer(initialValues: _*)
     private[this] var _wasRead: Boolean = false
 
-    override def toString = s"SettingsState(values: ${values.toList})"
+    override def toString: String = s"SettingsState(values: ${values.toList})"
 
     def value(idx: Int): Any = {
       _wasRead = true
@@ -49,10 +50,10 @@ object Settings {
     errors: List[String],
     warnings: List[String]) {
 
-    def fail(msg: String) =
+    def fail(msg: String): Settings.ArgsSummary =
       ArgsSummary(sstate, arguments.tail, errors :+ msg, warnings)
 
-    def warn(msg: String) =
+    def warn(msg: String): Settings.ArgsSummary =
       ArgsSummary(sstate, arguments.tail, errors, warnings :+ msg)
   }
 
@@ -131,7 +132,7 @@ object Settings {
         case (BooleanTag, _) =>
           update(true, args)
         case (OptionTag, _) =>
-          update(Some(propertyClass.get.newInstance), args)
+          update(Some(propertyClass.get.getConstructor().newInstance()), args)
         case (ListTag, _) =>
           if (argRest.isEmpty) missingArg
           else update((argRest split ",").toList, args)
@@ -140,14 +141,14 @@ object Settings {
           else if (!choices.contains(argRest))
             fail(s"$arg is not a valid choice for $name", args)
           else update(argRest, args)
-        case (StringTag, arg :: args) if name == "-d" =>
-          Path(arg) match {
-            case _: Directory =>
-              update(arg, args)
-            case p if p.extension == "jar" =>
-              update(arg, args)
-            case _ =>
-              fail(s"'$arg' does not exist or is not a directory", args)
+        case (OutputTag, arg :: args) =>
+          val path = Directory(arg)
+          val isJar = path.extension == "jar"
+          if (!isJar && !path.isDirectory)
+            fail(s"'$arg' does not exist or is not a directory or .jar file", args)
+          else {
+            val output = if (isJar) JarArchive.create(path) else new PlainDirectory(path)
+            update(output, args)
           }
         case (StringTag, arg2 :: args2) =>
           update(arg2, args2)
@@ -192,15 +193,15 @@ object Settings {
 
   class SettingGroup {
 
-    val _allSettings = new ArrayBuffer[Setting[_]]
+    private[this] val _allSettings = new ArrayBuffer[Setting[_]]
     def allSettings: Seq[Setting[_]] = _allSettings
 
-    def defaultState = new SettingsState(allSettings map (_.default))
+    def defaultState: SettingsState = new SettingsState(allSettings map (_.default))
 
-    def userSetSettings(state: SettingsState) =
+    def userSetSettings(state: SettingsState): Seq[Setting[_]] =
       allSettings filterNot (_.isDefaultIn(state))
 
-    def toConciseString(state: SettingsState) =
+    def toConciseString(state: SettingsState): String =
       userSetSettings(state).mkString("(", " ", ")")
 
     private def checkDependencies(state: ArgsSummary): ArgsSummary =
@@ -275,11 +276,14 @@ object Settings {
     def MultiStringSetting(name: String, helpArg: String, descr: String): Setting[List[String]] =
       publish(Setting(name, descr, Nil, helpArg))
 
+    def OutputSetting(name: String, helpArg: String, descr: String, default: AbstractFile): Setting[AbstractFile] =
+      publish(Setting(name, descr, default, helpArg))
+
     def PathSetting(name: String, descr: String, default: String): Setting[String] =
       publish(Setting(name, descr, default))
 
     def PathSetting(name: String, helpArg: String, descr: String, default: String): Setting[String] =
-        publish(Setting(name, descr, default, helpArg))
+      publish(Setting(name, descr, default, helpArg))
 
     def PhasesSetting(name: String, descr: String, default: String = ""): Setting[List[String]] =
       publish(Setting(name, descr, if (default.isEmpty) Nil else List(default)))

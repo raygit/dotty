@@ -16,13 +16,12 @@ import core.Decorators._
 import core.Constants._
 import core.Definitions._
 import typer.NoChecking
+import typer.Inliner
 import typer.ProtoTypes._
-import typer.ErrorReporting._
 import core.TypeErasure._
 import core.Decorators._
-import dotty.tools.dotc.ast.{Trees, tpd, untpd}
+import dotty.tools.dotc.ast.{tpd, untpd}
 import ast.Trees._
-import scala.collection.mutable.ListBuffer
 import dotty.tools.dotc.core.{Constants, Flags}
 import ValueClasses._
 import TypeUtils._
@@ -30,15 +29,14 @@ import ExplicitOuter._
 import core.Mode
 import reporting.trace
 
-
 class Erasure extends Phase with DenotTransformer {
 
   override def phaseName: String = Erasure.name
 
   /** List of names of phases that should precede this phase */
-  override def runsAfter = Set(InterceptedMethods.name, Splitter.name, ElimRepeated.name)
+  override def runsAfter: Set[String] = Set(InterceptedMethods.name, Splitter.name, ElimRepeated.name)
 
-  override def changesMembers: Boolean = true   // the phase adds bridges
+  override def changesMembers: Boolean = true // the phase adds bridges
   override def changesParents: Boolean = true // the phase drops Any
 
   def transform(ref: SingleDenotation)(implicit ctx: Context): SingleDenotation = ref match {
@@ -92,14 +90,14 @@ class Erasure extends Phase with DenotTransformer {
       ref.derivedSingleDenotation(ref.symbol, transformInfo(ref.symbol, ref.symbol.info))
   }
 
-  val eraser = new Erasure.Typer
+  private[this] val eraser = new Erasure.Typer(this)
 
   def run(implicit ctx: Context): Unit = {
     val unit = ctx.compilationUnit
     unit.tpdTree = eraser.typedExpr(unit.tpdTree)(ctx.fresh.setPhase(this.next))
   }
 
-  override def checkPostCondition(tree: tpd.Tree)(implicit ctx: Context) = {
+  override def checkPostCondition(tree: tpd.Tree)(implicit ctx: Context): Unit = {
     assertErased(tree)
     tree match {
       case res: tpd.This =>
@@ -135,31 +133,35 @@ class Erasure extends Phase with DenotTransformer {
       }
   }
 
-  def assertErased(tp: Type, tree: tpd.Tree = tpd.EmptyTree)(implicit ctx: Context): Unit =
-    if (tp.typeSymbol == defn.ArrayClass &&
-        ctx.compilationUnit.source.file.name == "Array.scala") {} // ok
-    else
-      assert(isErasedType(tp),
+  def assertErased(tp: Type, tree: tpd.Tree = tpd.EmptyTree)(implicit ctx: Context): Unit = {
+    def isAllowed(cls: Symbol, sourceName: String) =
+      tp.typeSymbol == cls && ctx.compilationUnit.source.file.name == sourceName
+    assert(isErasedType(tp) ||
+           isAllowed(defn.ArrayClass, "Array.scala") ||
+           isAllowed(defn.TupleClass, "Tuple.scala") ||
+           isAllowed(defn.NonEmptyTupleClass, "Tuple.scala") ||
+           isAllowed(defn.PairClass, "Tuple.scala"),
         i"The type $tp - ${tp.toString} of class ${tp.getClass} of tree $tree : ${tree.tpe} / ${tree.getClass} is illegal after erasure, phase = ${ctx.phase.prev}")
+  }
 }
 
 object Erasure {
   import tpd._
   import TypeTestsCasts._
 
-  val name = "erasure"
+  val name: String = "erasure"
 
   object Boxing {
 
-    def isUnbox(sym: Symbol)(implicit ctx: Context) =
+    def isUnbox(sym: Symbol)(implicit ctx: Context): Boolean =
       sym.name == nme.unbox && sym.owner.linkedClass.isPrimitiveValueClass
 
-    def isBox(sym: Symbol)(implicit ctx: Context) =
+    def isBox(sym: Symbol)(implicit ctx: Context): Boolean =
       sym.name == nme.box && sym.owner.linkedClass.isPrimitiveValueClass
 
-    def boxMethod(cls: ClassSymbol)(implicit ctx: Context) =
+    def boxMethod(cls: ClassSymbol)(implicit ctx: Context): Symbol =
       cls.linkedClass.info.member(nme.box).symbol
-    def unboxMethod(cls: ClassSymbol)(implicit ctx: Context) =
+    def unboxMethod(cls: ClassSymbol)(implicit ctx: Context): Symbol =
       cls.linkedClass.info.member(nme.unbox).symbol
 
     /** Isf this tree is an unbox operation which can be safely removed
@@ -177,7 +179,7 @@ object Erasure {
         EmptyTree
     }
 
-    def constant(tree: Tree, const: Tree)(implicit ctx: Context) =
+    def constant(tree: Tree, const: Tree)(implicit ctx: Context): Tree =
       (if (isPureExpr(tree)) const else Block(tree :: Nil, const))
         .withPos(tree.pos)
 
@@ -259,7 +261,7 @@ object Erasure {
           cast(ref(defn.runtimeMethodRef(nme.toObjectArray)).appliedTo(tree), pt)
 
         // When casting between two EVTs, we need to check which one underlies the other to determine
-        // wheter u2evt or evt2u should be used.
+        // whether u2evt or evt2u should be used.
         case (tp1 @ ErasedValueType(tycon1, underlying1), tp2 @ ErasedValueType(tycon2, underlying2)) =>
           if (tp1 <:< underlying2)
             // Cast EVT(tycon1, underlying1) to EVT(tycon2, EVT(tycon1, underlying1))
@@ -315,8 +317,19 @@ object Erasure {
       }
   }
 
-  class Typer extends typer.ReTyper with NoChecking {
+  class Typer(erasurePhase: DenotTransformer) extends typer.ReTyper with NoChecking {
     import Boxing._
+
+    private def checkNotErased(tree: Tree)(implicit ctx: Context): tree.type = {
+      if (tree.symbol.isEffectivelyErased && !ctx.mode.is(Mode.Type))
+        ctx.error(em"${tree.symbol} is declared as erased, but is in fact used", tree.pos)
+      tree
+    }
+
+    def erasedDef(sym: Symbol)(implicit ctx: Context): Thicket = {
+      if (sym.owner.isClass) sym.dropAfter(erasurePhase)
+      tpd.EmptyTree
+    }
 
     def erasedType(tree: untpd.Tree)(implicit ctx: Context): Type = {
       val tp = tree.typeOpt
@@ -357,11 +370,15 @@ object Erasure {
       else
         super.typedLiteral(tree)
 
+    override def typedIdent(tree: untpd.Ident, pt: Type)(implicit ctx: Context): Tree = {
+      checkNotErased(super.typedIdent(tree, pt))
+    }
+
     /** Type check select nodes, applying the following rewritings exhaustively
      *  on selections `e.m`, where `OT` is the type of the owner of `m` and `ET`
      *  is the erased type of the selection's original qualifier expression.
      *
-     *      e.m1 -> e.m2          if `m1` is a member of Any or AnyVal and `m2` is
+     *      e.m1 -> e.m2          if `m1` is a member of a class that erases to Object and `m2` is
      *                            the same-named member in Object.
      *      e.m -> box(e).m       if `e` is primitive and `m` is a member or a reference class
      *                            or `e` has an erased value class type.
@@ -381,7 +398,7 @@ object Erasure {
 
       def mapOwner(sym: Symbol): Symbol = {
         def recur(owner: Symbol): Symbol =
-          if ((owner eq defn.AnyClass) || (owner eq defn.AnyValClass)) {
+          if (defn.erasedToObject.contains(owner)) {
             assert(sym.isConstructor, s"${sym.showLocated}")
             defn.ObjectClass
           } else if (defn.isSyntheticFunctionClass(owner))
@@ -437,7 +454,7 @@ object Erasure {
         }
       }
 
-      recur(typed(tree.qualifier, AnySelectionProto))
+      checkNotErased(recur(typed(tree.qualifier, AnySelectionProto)))
     }
 
     override def typedThis(tree: untpd.This)(implicit ctx: Context): Tree =
@@ -462,7 +479,7 @@ object Erasure {
       case _ => Nil
     }
 
-    override def typedTypeApply(tree: untpd.TypeApply, pt: Type)(implicit ctx: Context) = {
+    override def typedTypeApply(tree: untpd.TypeApply, pt: Type)(implicit ctx: Context): Tree = {
       val ntree = interceptTypeApply(tree.asInstanceOf[TypeApply])(ctx.withPhase(ctx.erasurePhase))
 
       ntree match {
@@ -485,7 +502,7 @@ object Erasure {
       val Apply(fun, args) = tree
       if (fun.symbol == defn.cbnArg)
         typedUnadapted(args.head, pt)
-      else typedExpr(fun, FunProto(args, pt, this)) match {
+      else typedExpr(fun, FunProto(args, pt)(this)) match {
         case fun1: Apply => // arguments passed in prototype were already passed
           fun1
         case fun1 =>
@@ -512,17 +529,17 @@ object Erasure {
     // The following four methods take as the proto-type the erasure of the pre-existing type,
     // if the original proto-type is not a value type.
     // This makes all branches be adapted to the correct type.
-    override def typedSeqLiteral(tree: untpd.SeqLiteral, pt: Type)(implicit ctx: Context) =
+    override def typedSeqLiteral(tree: untpd.SeqLiteral, pt: Type)(implicit ctx: Context): SeqLiteral =
       super.typedSeqLiteral(tree, erasure(tree.typeOpt))
         // proto type of typed seq literal is original type;
 
-    override def typedIf(tree: untpd.If, pt: Type)(implicit ctx: Context) =
+    override def typedIf(tree: untpd.If, pt: Type)(implicit ctx: Context): Tree =
       super.typedIf(tree, adaptProto(tree, pt))
 
-    override def typedMatch(tree: untpd.Match, pt: Type)(implicit ctx: Context) =
+    override def typedMatch(tree: untpd.Match, pt: Type)(implicit ctx: Context): Tree =
       super.typedMatch(tree, adaptProto(tree, pt))
 
-    override def typedTry(tree: untpd.Try, pt: Type)(implicit ctx: Context) =
+    override def typedTry(tree: untpd.Try, pt: Type)(implicit ctx: Context): Try =
       super.typedTry(tree, adaptProto(tree, pt))
 
     private def adaptProto(tree: untpd.Tree, pt: Type)(implicit ctx: Context) = {
@@ -533,45 +550,54 @@ object Erasure {
       }
     }
 
-    override def typedValDef(vdef: untpd.ValDef, sym: Symbol)(implicit ctx: Context): ValDef =
-      super.typedValDef(untpd.cpy.ValDef(vdef)(
-        tpt = untpd.TypedSplice(TypeTree(sym.info).withPos(vdef.tpt.pos))), sym)
+    override def typedInlined(tree: untpd.Inlined, pt: Type)(implicit ctx: Context): Tree =
+      super.typedInlined(tree, pt) match {
+        case tree: Inlined => Inliner.dropInlined(tree)
+      }
+
+    override def typedValDef(vdef: untpd.ValDef, sym: Symbol)(implicit ctx: Context): Tree =
+      if (sym.isEffectivelyErased) erasedDef(sym)
+      else
+        super.typedValDef(untpd.cpy.ValDef(vdef)(
+          tpt = untpd.TypedSplice(TypeTree(sym.info).withPos(vdef.tpt.pos))), sym)
 
     /** Besides normal typing, this function also compacts anonymous functions
-     *  with more than `MaxImplementedFunctionArity` parameters to ise a single
+     *  with more than `MaxImplementedFunctionArity` parameters to use a single
      *  parameter of type `[]Object`.
      */
-    override def typedDefDef(ddef: untpd.DefDef, sym: Symbol)(implicit ctx: Context) = {
-      val restpe =
-        if (sym.isConstructor) defn.UnitType
-        else sym.info.resultType
-      var vparamss1 = (outer.paramDefs(sym) ::: ddef.vparamss.flatten) :: Nil
-      var rhs1 = ddef.rhs match {
-        case id @ Ident(nme.WILDCARD) => untpd.TypedSplice(id.withType(restpe))
-        case _ => ddef.rhs
-      }
-      if (sym.isAnonymousFunction && vparamss1.head.length > MaxImplementedFunctionArity) {
-        val bunchedParam = ctx.newSymbol(sym, nme.ALLARGS, Flags.TermParam, JavaArrayType(defn.ObjectType))
-        def selector(n: Int) = ref(bunchedParam)
-          .select(defn.Array_apply)
-          .appliedTo(Literal(Constant(n)))
-        val paramDefs = vparamss1.head.zipWithIndex.map {
-          case (paramDef, idx) =>
-            assignType(untpd.cpy.ValDef(paramDef)(rhs = selector(idx)), paramDef.symbol)
+    override def typedDefDef(ddef: untpd.DefDef, sym: Symbol)(implicit ctx: Context): Tree =
+      if (sym.isEffectivelyErased) erasedDef(sym)
+      else {
+        val restpe =
+          if (sym.isConstructor) defn.UnitType
+          else sym.info.resultType
+        var vparamss1 = (outer.paramDefs(sym) ::: ddef.vparamss.flatten) :: Nil
+        var rhs1 = ddef.rhs match {
+          case id @ Ident(nme.WILDCARD) => untpd.TypedSplice(id.withType(restpe))
+          case _ => ddef.rhs
         }
-        vparamss1 = (tpd.ValDef(bunchedParam) :: Nil) :: Nil
-        rhs1 = untpd.Block(paramDefs, rhs1)
+        if (sym.isAnonymousFunction && vparamss1.head.length > MaxImplementedFunctionArity) {
+          val bunchedParam = ctx.newSymbol(sym, nme.ALLARGS, Flags.TermParam, JavaArrayType(defn.ObjectType))
+          def selector(n: Int) = ref(bunchedParam)
+            .select(defn.Array_apply)
+            .appliedTo(Literal(Constant(n)))
+          val paramDefs = vparamss1.head.zipWithIndex.map {
+            case (paramDef, idx) =>
+              assignType(untpd.cpy.ValDef(paramDef)(rhs = selector(idx)), paramDef.symbol)
+          }
+          vparamss1 = (tpd.ValDef(bunchedParam) :: Nil) :: Nil
+          rhs1 = untpd.Block(paramDefs, rhs1)
+        }
+        vparamss1 = vparamss1.mapConserve(_.filterConserve(!_.symbol.is(Flags.Erased)))
+        val ddef1 = untpd.cpy.DefDef(ddef)(
+          tparams = Nil,
+          vparamss = vparamss1,
+          tpt = untpd.TypedSplice(TypeTree(restpe).withPos(ddef.tpt.pos)),
+          rhs = rhs1)
+        super.typedDefDef(ddef1, sym)
       }
-      vparamss1 = vparamss1.mapConserve(_.filterConserve(!_.symbol.is(Flags.Erased)))
-      val ddef1 = untpd.cpy.DefDef(ddef)(
-        tparams = Nil,
-        vparamss = vparamss1,
-        tpt = untpd.TypedSplice(TypeTree(restpe).withPos(ddef.tpt.pos)),
-        rhs = rhs1)
-      super.typedDefDef(ddef1, sym)
-    }
 
-    override def typedClosure(tree: untpd.Closure, pt: Type)(implicit ctx: Context) = {
+    override def typedClosure(tree: untpd.Closure, pt: Type)(implicit ctx: Context): Tree = {
       val xxl = defn.isXXLFunctionClass(tree.typeOpt.typeSymbol)
       var implClosure @ Closure(_, meth, _) = super.typedClosure(tree, pt)
       if (xxl) implClosure = cpy.Closure(implClosure)(tpt = TypeTree(defn.FunctionXXLType))
@@ -673,7 +699,7 @@ object Erasure {
 
     override def typedStats(stats: List[untpd.Tree], exprOwner: Symbol)(implicit ctx: Context): List[Tree] = {
       val stats1 =
-        if (takesBridges(ctx.owner)) new Bridges(ctx.owner.asClass).add(stats)
+        if (takesBridges(ctx.owner)) new Bridges(ctx.owner.asClass, erasurePhase).add(stats)
         else stats
       super.typedStats(stats1, exprOwner).filter(!_.isEmpty)
     }

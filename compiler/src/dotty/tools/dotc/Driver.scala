@@ -2,8 +2,9 @@ package dotty.tools.dotc
 
 import dotty.tools.FatalError
 import config.CompilerCommand
+import core.Comments.{ContextDoc, ContextDocstrings}
 import core.Contexts.{Context, ContextBase}
-import util.DotClass
+import core.Mode
 import reporting._
 import scala.util.control.NonFatal
 import fromtasty.TASTYCompiler
@@ -14,7 +15,7 @@ import fromtasty.TASTYCompiler
  *  process, but in most cases you only need to call [[process]] on the
  *  existing object [[Main]].
  */
-class Driver extends DotClass {
+class Driver {
 
   protected def newCompiler(implicit ctx: Context): Compiler =
     if (ctx.settings.fromTasty.value) new TASTYCompiler
@@ -36,14 +37,19 @@ class Driver extends DotClass {
       }
     else ctx.reporter
 
-  protected def initCtx = (new ContextBase).initialCtx
+  protected def initCtx: Context = (new ContextBase).initialCtx
 
-  protected def sourcesRequired = true
+  protected def sourcesRequired: Boolean = true
 
   def setup(args: Array[String], rootCtx: Context): (List[String], Context) = {
     val ctx = rootCtx.fresh
     val summary = CompilerCommand.distill(args)(ctx)
     ctx.setSettings(summary.sstate)
+
+    if (!ctx.settings.YdropComments.value(ctx) || ctx.mode.is(Mode.ReadComments)) {
+      ctx.setProperty(ContextDoc, new ContextDocstrings)
+    }
+
     val fileNames = CompilerCommand.checkUsage(summary, sourcesRequired)(ctx)
     (fileNames, ctx)
   }
@@ -111,7 +117,7 @@ class Driver extends DotClass {
    *
    *  In most cases, you do not need a custom `Context` and should
    *  instead use one of the other overloads of `process`. However,
-   *  the other overloads cannot be overriden, instead you
+   *  the other overloads cannot be overridden, instead you
    *  should override this one which they call internally.
    *
    *  Usage example: [[https://github.com/lampepfl/dotty/tree/master/test/test/OtherEntryPointsTest.scala]]

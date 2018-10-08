@@ -7,10 +7,9 @@ import dotty.tools.dotc.core.Flags._
 import dotty.tools.dotc.core.NameOps._
 import dotty.tools.dotc.core.Names.Name
 import dotty.tools.dotc.core.Symbols._
-import dotty.tools.dotc.core.Types.{ExprType, TypeAlias}
+import dotty.tools.dotc.core.Types.ExprType
 import dotty.tools.dotc.printing.Texts._
 
-import scala.language.implicitConversions
 
 class ReplPrinter(_ctx: Context) extends DecompilerPrinter(_ctx) {
 
@@ -32,9 +31,14 @@ class ReplPrinter(_ctx: Context) extends DecompilerPrinter(_ctx) {
   override def dclText(sym: Symbol): Text = {
     toText(sym) ~ {
       if (sym.is(Method)) toText(sym.info)
-      else if (sym.isType && sym.info.isInstanceOf[TypeAlias]) toText(sym.info)
+      else if (sym.isType && sym.info.isTypeAlias) toText(sym.info)
       else if (sym.isType || sym.isClass) ""
       else ":" ~~ toText(sym.info)
     }
   }
+
+  // We don't want the colors coming from RefinedPrinter as the REPL uses its
+  // own syntax coloring mechanism.
+  override def coloredStr(text: String, color: String): String = text
+  override def coloredText(text: Text, color: String): Text = text
 }

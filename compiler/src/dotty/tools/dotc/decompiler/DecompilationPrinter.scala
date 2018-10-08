@@ -6,8 +6,8 @@ import java.io.{OutputStream, PrintStream}
 import dotty.tools.dotc.core.Contexts._
 import dotty.tools.dotc.core.Phases.Phase
 import dotty.tools.dotc.core.tasty.TastyPrinter
-import dotty.tools.dotc.printing.DecompilerPrinter
-import dotty.tools.io.{File, Path}
+import dotty.tools.dotc.tastyreflect.TastyImpl
+import dotty.tools.io.File
 
 /** Phase that prints the trees in all loaded compilation units.
  *
@@ -18,13 +18,13 @@ class DecompilationPrinter extends Phase {
   override def phaseName: String = "decompilationPrinter"
 
   override def run(implicit ctx: Context): Unit = {
-    val outputDir = ctx.settings.outputDir.value
-    if (outputDir == ".") printToOutput(System.out)
+    if (ctx.settings.outputDir.isDefault) printToOutput(System.out)
     else {
+      val outputDir = ctx.settings.outputDir.value
       var os: OutputStream = null
       var ps: PrintStream = null
       try {
-        os = File(outputDir + ".decompiled").outputStream(append = true)
+        os = File(outputDir.fileNamed("decompiled.scala").path).outputStream(append = true)
         ps = new PrintStream(os)
         printToOutput(ps)
       } finally {
@@ -36,23 +36,11 @@ class DecompilationPrinter extends Phase {
 
   private def printToOutput(out: PrintStream)(implicit ctx: Context): Unit = {
     val unit = ctx.compilationUnit
-    val pageWidth = ctx.settings.pageWidth.value
-    val printLines = ctx.settings.printLines.value
-    val doubleLine = "=" * pageWidth
-    val line = "-" * pageWidth
-
-    out.println(doubleLine)
-    out.println(unit.source)
-    out.println(line)
-
-    val printer = new DecompilerPrinter(ctx)
-
-    out.println(printer.toText(unit.tpdTree).mkString(pageWidth, printLines))
-    out.println(line)
-
     if (ctx.settings.printTasty.value) {
       new TastyPrinter(unit.pickled.head._2).printContents()
-      out.println(line)
+    } else {
+      out.println(s"/** Decompiled from $unit */")
+      out.println(new TastyImpl(ctx).showSourceCode.showTree(unit.tpdTree)(ctx))
     }
   }
 }

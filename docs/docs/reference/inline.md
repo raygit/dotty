@@ -4,7 +4,7 @@ title: Inline
 ---
 
 `inline` is a new modifier that guarantees that a definition will be
-inlined at the point of use. Example:
+inline at the point of use. Example:
 
     object Config {
       inline val logging = false
@@ -26,10 +26,11 @@ inlined at the point of use. Example:
         else op
     }
 
-The `Config` object contains a definition of an `inline` value
+The `Config` object contains a definition of a `inline` value
 `logging`. This means that `logging` is treated as a constant value,
 equivalent to its right-hand side `false`. The right-hand side of such
-an inline val must itself be a constant expression. Used in this way,
+a inline val must itself be a [constant
+expression](#the-definition-of-constant-expression). Used in this way,
 `inline` is equivalent to Java and Scala 2's `final`. `final` meaning
 "constant" is still supported in Dotty, but will be phased out.
 
@@ -57,7 +58,7 @@ If `Config.logging == false`, this will be rewritten to
 
 Note that the arguments corresponding to the parameters `msg` and `op`
 of the inline method `log` are defined before the inlined body (which
-is in this case simply `op`). By-name parameters of the inlined method
+is in this case simply `op`). By-name parameters of the inline method
 correspond to `def` bindings whereas by-value parameters correspond to
 `val` bindings. So if `log` was defined like this:
 
@@ -73,6 +74,20 @@ are evaluated before the call whereas by-name arguments are evaluated
 each time they are referenced. As a consequence, it is often
 preferable to make arguments of inline methods by-name in order to
 avoid unnecessary evaluations.
+
+For instance, here is how we can define a zero-overhead `foreach` method
+that translates into a straightforward while loop without any indirection or
+overhead:
+
+    inline def foreach(op: => Int => Unit): Unit = {
+      var i = from
+      while (i < end) {
+        op(i)
+        i += 1
+      }
+    }
+
+By contrast, if `op` is a call-by-value parameter, it would be evaluated separately as a closure.
 
 Inline methods can be recursive. For instance, when called with a constant
 exponent `n`, the following method for `power` will be implemented by
@@ -95,40 +110,32 @@ straight inline code without any loop or recursion.
         //    val y3 = y2 * x  // ^5
         //    y3 * y3          // ^10
 
-Parameters of inline methods can themselves be marked `inline`. This means
-that the argument of an inline method is itself inlined in the inlined body of
-the method. Using this scheme, we can define a zero-overhead `foreach` method
-that translates into a straightforward while loop without any indirection or
-overhead:
-
-    inline def foreach(inline op: Int => Unit): Unit = {
-      var i = from
-      while (i < end) {
-        op(i)
-        i += 1
-      }
-    }
+Parameters of inline methods can be marked `inline`. This means
+that actual arguments to these parameters must be constant expressions.
 
 ### Relationship to `@inline`.
 
-Existing Scala defines a `@inline` annotation which is used as a hint
-for the backend to inline. For most purposes, this annotation is
-superseded by the `inline` modifier. The modifier is more powerful
-than the annotation: Expansion is guaranteed instead of best effort,
+Scala also defines a `@inline` annotation which is used as a hint
+for the backend to inline. The `inline` modifier is a more powerful
+option: Expansion is guaranteed instead of best effort,
 it happens in the frontend instead of in the backend, and it also applies
-to method arguments and recursive methods.
+to recursive methods.
 
-Since `inline` is now a keyword, it would be a syntax error to write
-`@inline`. However, one can still refer to the annotation by putting
-it in backticks, i.e.
+To cross compile between both Dotty and Scalac, we introduce a new `@forceInline`
+annotation which is equivalent to the new `inline` modifier. Note that
+Scala 2 ignores the `@forceInline` annotation, so one must use both
+annotations to guarantee inlining for Dotty and at the same time hint inlining
+for Scala 2 (i.e. `@forceInline @inline`).
 
-    @`inline` def ...
+### The definition of constant expression
 
+Right-hand sides of inline values and of arguments for inline parameters
+must be constant expressions in the sense defined by the [SLS §
+6.24](https://www.scala-lang.org/files/archive/spec/2.12/06-expressions.html#constant-expressions),
+including "platform-specific" extensions such as constant folding of
+pure numeric computations.
 
 ### Reference
 
-For more info, see [PR #1492](https://github.com/lampepfl/dotty/pull/1492) and
-[Scala SIP 28](http://docs.scala-lang.org/sips/pending/inline-meta.html)
-
-
-
+For more info, see [PR #4927](https://github.com/lampepfl/dotty/pull/4768), which explains how
+inline methods can be used for typelevel programming and code specialization.

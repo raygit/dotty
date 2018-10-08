@@ -3,19 +3,11 @@ package dotc
 
 import core._
 import Contexts._
-import Periods._
-import Symbols._
-import Types._
-import Scopes._
-import typer.{FrontEnd, ImportInfo, RefChecks, Typer}
-import reporting.{ConsoleReporter, Reporter}
+import typer.{FrontEnd, RefChecks}
 import Phases.Phase
 import transform._
-import util.FreshNameCreator
-import core.DenotTransformers.DenotTransformer
-import core.Denotations.SingleDenotation
 import dotty.tools.backend.jvm.{CollectSuperCalls, GenBCode, LabelDefs}
-import dotty.tools.dotc.transform.localopt.{Simplify, StringInterpolatorOpt}
+import dotty.tools.dotc.transform.localopt.StringInterpolatorOpt
 
 /** The central class of the dotc compiler. The job of a compiler is to create
  *  runs, which process given `phases` in a given `rootContext`.
@@ -52,7 +44,6 @@ class Compiler {
   /** Phases dealing with TASTY tree pickling and unpickling */
   protected def picklerPhases: List[List[Phase]] =
     List(new Pickler) ::            // Generate TASTY info
-    List(new LinkAll) ::            // Reload compilation units from TASTY for library code (if needed)
     List(new ReifyQuotes) ::        // Turn quoted trees into explicit run-time data structures
     Nil
 
@@ -60,14 +51,14 @@ class Compiler {
   protected def transformPhases: List[List[Phase]] =
     List(new FirstTransform,         // Some transformations to put trees into a canonical form
          new CheckReentrant,         // Internal use only: Check that compiled program has no data races involving global vars
-         new ElimPackagePrefixes) :: // Eliminate references to package prefixes in Select nodes
+         new ElimPackagePrefixes,    // Eliminate references to package prefixes in Select nodes
+         new CookComments) ::        // Cook the comments: expand variables, doc, etc.
     List(new CheckStatic,            // Check restrictions that apply to @static members
          new ElimRepeated,           // Rewrite vararg parameters and arguments
-         new NormalizeFlags,         // Rewrite some definition flags
-         new ExtensionMethods,       // Expand methods of value classes with extension methods
          new ExpandSAMs,             // Expand single abstract method closures to anonymous classes
+         new ProtectedAccessors,     // Add accessors for protected members
+         new ExtensionMethods,       // Expand methods of value classes with extension methods
          new ShortcutImplicits,      // Allow implicit functions without creating closures
-         new TailRec,                // Rewrite tail recursion to loops
          new ByNameClosures,         // Expand arguments to by-name parameters to closures
          new LiftTry,                // Put try expressions that might execute on non-empty stacks into their own methods
          new HoistSuperArgs,         // Hoist complex arguments of supercalls to enclosing scope
@@ -80,24 +71,24 @@ class Compiler {
          new StringInterpolatorOpt,  // Optimizes raw and s string interpolators by rewriting them to string concatentations
          new CrossCastAnd,           // Normalize selections involving intersection types.
          new Splitter) ::            // Expand selections involving union types into conditionals
-    List(new ErasedDecls,            // Removes all erased defs and vals decls (except for parameters)
-         new IsInstanceOfChecker,    // check runtime realisability for `isInstanceOf`
+    List(new PruneErasedDefs,        // Drop erased definitions from scopes and simplify erased expressions
          new VCInlineMethods,        // Inlines calls to value class methods
          new SeqLiterals,            // Express vararg arguments as arrays
          new InterceptedMethods,     // Special handling of `==`, `|=`, `getClass` methods
          new Getters,                // Replace non-private vals and vars with getter defs (fields are added later)
          new ElimByName,             // Expand by-name parameter references
+         new CollectNullableFields,  // Collect fields that can be nulled out after use in lazy initialization
          new ElimOuterSelect,        // Expand outer selections
          new AugmentScala2Traits,    // Expand traits defined in Scala 2.x to simulate old-style rewritings
          new ResolveSuper,           // Implement super accessors and add forwarders to trait methods
-         new Simplify,               // Perform local optimizations, simplified versions of what linker does.
          new PrimitiveForwarders,    // Add forwarders to trait methods that have a mismatch between generic and primitives
          new FunctionXXLForwarders,  // Add forwarders for FunctionXXL apply method
          new ArrayConstructors) ::   // Intercept creation of (non-generic) arrays and intrinsify.
     List(new Erasure) ::             // Rewrite types to JVM model, erasing all type parameters, abstract types and refinements.
     List(new ElimErasedValueType,    // Expand erased value types to their underlying implmementation types
          new VCElideAllocations,     // Peep-hole optimization to eliminate unnecessary value class allocations
-         new Mixin,                   // Expand trait fields and trait initializers
+         new TailRec,                // Rewrite tail recursion to loops
+         new Mixin,                  // Expand trait fields and trait initializers
          new LazyVals,               // Expand lazy vals
          new Memoize,                // Add private fields to getters and setters
          new NonLocalReturns,        // Expand non-local returns
@@ -105,8 +96,7 @@ class Compiler {
     List(new Constructors,           // Collect initialization code in primary constructors
                                         // Note: constructors changes decls in transformTemplate, no InfoTransformers should be added after it
          new FunctionalInterfaces,   // Rewrites closures to implement @specialized types of Functions.
-         new GetClass,               // Rewrites getClass calls on primitive types.
-         new Simplify) ::            // Perform local optimizations, simplified versions of what linker does.
+         new GetClass) ::            // Rewrites getClass calls on primitive types.
     List(new LinkScala2Impls,        // Redirect calls to trait methods defined by Scala 2.x, so that they now go to their implementations
          new LambdaLift,             // Lifts out nested functions to class scope, storing free variables in environments
                                         // Note: in this mini-phase block scopes are incorrect. No phases that rely on scopes should be here
@@ -114,13 +104,12 @@ class Compiler {
     List(new Flatten,                // Lift all inner classes to package scope
          new RenameLifted,           // Renames lifted classes to local numbering scheme
          new TransformWildcards,     // Replace wildcards with default values
-         new MoveStatics,            // Move static methods to companion classes
+         new MoveStatics,            // Move static methods from companion to the class itself
          new ExpandPrivate,          // Widen private definitions accessed from nested classes
          new RestoreScopes,          // Repair scopes rendered invalid by moving definitions in prior phases of the group
          new SelectStatic,           // get rid of selects that would be compiled into GetStatic
          new CollectEntryPoints,     // Find classes with main methods
          new CollectSuperCalls,      // Find classes that are called with super
-         new DropInlined,            // Drop Inlined nodes, since backend has no use for them
          new LabelDefs) ::           // Converts calls to labels to jumps
     Nil
 
@@ -129,8 +118,8 @@ class Compiler {
     List(new GenBCode) ::            // Generate JVM bytecode
     Nil
 
-  var runId = 1
-  def nextRunId = {
+  var runId: Int = 1
+  def nextRunId: Int = {
     runId += 1; runId
   }
 

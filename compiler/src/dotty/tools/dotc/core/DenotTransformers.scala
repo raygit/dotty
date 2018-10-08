@@ -8,8 +8,6 @@ import Types._
 import Symbols._
 import Denotations._
 import Phases._
-import java.lang.AssertionError
-import dotty.tools.dotc.util.DotClass
 
 object DenotTransformers {
 
@@ -22,11 +20,11 @@ object DenotTransformers {
   trait DenotTransformer extends Phase {
 
     /** The last phase during which the transformed denotations are valid */
-    def lastPhaseId(implicit ctx: Context) = ctx.nextDenotTransformerId(id + 1)
+    def lastPhaseId(implicit ctx: Context): Int = ctx.base.nextDenotTransformerId(id + 1)
 
-    /** The validity period of the transformer in the given context */
+    /** The validity period of the transformed denotations in the given context */
     def validFor(implicit ctx: Context): Period =
-      Period(ctx.runId, id, lastPhaseId)
+      Period(ctx.runId, id + 1, lastPhaseId)
 
     /** The transformation method */
     def transform(ref: SingleDenotation)(implicit ctx: Context): SingleDenotation

@@ -4,23 +4,23 @@ package ast
 
 import core._
 import util.Positions._, Types._, Contexts._, Constants._, Names._, NameOps._, Flags._
-import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._
+import Symbols._, StdNames._, Trees._
 import Decorators._
-import collection.mutable.ListBuffer
 import util.Property
 import typer.ErrorReporting._
+
+import scala.annotation.internal.sharable
 
 /** Helper methods to desugar enums */
 object DesugarEnums {
   import untpd._
-  import desugar.DerivedFromParamTree
 
   @sharable object CaseKind extends Enumeration {
-    val Simple, Object, Class = Value
+    val Simple, Object, Class: Value = Value
   }
 
   /** Attachment containing the number of enum cases and the smallest kind that was seen so far. */
-  val EnumCaseCount = new Property.Key[(Int, CaseKind.Value)]
+  val EnumCaseCount: Property.Key[(Int, DesugarEnums.CaseKind.Value)] = new Property.Key
 
   /** The enumeration class that belongs to an enum case. This works no matter
    *  whether the case is still in the enum class or it has been transferred to the
@@ -33,8 +33,8 @@ object DesugarEnums {
 
   /** Is `tree` an (untyped) enum case? */
   def isEnumCase(tree: Tree)(implicit ctx: Context): Boolean = tree match {
-    case tree: MemberDef => tree.mods.hasMod[Mod.EnumCase]
-    case PatDef(mods, _, _, _) => mods.hasMod[Mod.EnumCase]
+    case tree: MemberDef => tree.mods.isEnumCase
+    case PatDef(mods, _, _, _) => mods.isEnumCase
     case _ => false
   }
 
@@ -64,11 +64,12 @@ object DesugarEnums {
   }
 
   /** A type tree referring to `enumClass` */
-  def enumClassRef(implicit ctx: Context) = TypeTree(enumClass.typeRef)
+  def enumClassRef(implicit ctx: Context): Tree =
+    if (enumClass.exists) TypeTree(enumClass.typeRef) else TypeTree()
 
   /** Add implied flags to an enum class or an enum case */
-  def addEnumFlags(cdef: TypeDef)(implicit ctx: Context) =
-    if (cdef.mods.hasMod[Mod.Enum]) cdef.withMods(cdef.mods.withFlags(cdef.mods.flags | Abstract | Sealed))
+  def addEnumFlags(cdef: TypeDef)(implicit ctx: Context): TypeDef =
+    if (cdef.mods.isEnumClass) cdef.withMods(cdef.mods.withFlags(cdef.mods.flags | Abstract | Sealed))
     else if (isEnumCase(cdef)) cdef.withMods(cdef.mods.withFlags(cdef.mods.flags | Final))
     else cdef
 
@@ -89,7 +90,7 @@ object DesugarEnums {
       DefDef(name.toTermName, Nil, Nil, TypeTree(), valuesDot(select))
     val privateValuesDef =
       ValDef(nme.DOLLAR_VALUES, TypeTree(),
-             New(TypeTree(defn.EnumValuesType.appliedTo(enumClass.typeRef :: Nil)), ListOfNil))
+        New(TypeTree(defn.EnumValuesType.appliedTo(enumClass.typeRef :: Nil)), ListOfNil))
         .withFlags(Private)
     val valueOfDef = enumDefDef("enumValue", "fromInt")
     val withNameDef = enumDefDef("enumValueNamed", "fromName")
@@ -195,7 +196,8 @@ object DesugarEnums {
   /** Expand a module definition representing a parameterless enum case */
   def expandEnumModule(name: TermName, impl: Template, mods: Modifiers, pos: Position)(implicit ctx: Context): Tree = {
     assert(impl.body.isEmpty)
-    if (impl.parents.isEmpty)
+    if (!enumClass.exists) EmptyTree
+    else if (impl.parents.isEmpty)
       expandSimpleEnumCase(name, mods, pos)
     else {
       def toStringMeth =
@@ -210,7 +212,8 @@ object DesugarEnums {
 
   /** Expand a simple enum case */
   def expandSimpleEnumCase(name: TermName, mods: Modifiers, pos: Position)(implicit ctx: Context): Tree =
-    if (enumClass.typeParams.nonEmpty) {
+    if (!enumClass.exists) EmptyTree
+    else if (enumClass.typeParams.nonEmpty) {
       val parent = interpolatedEnumParent(pos)
       val impl = Template(emptyConstructor, parent :: Nil, EmptyValDef, Nil)
       expandEnumModule(name, impl, mods, pos)

@@ -2,7 +2,6 @@ package dotty.tools.dotc
 package transform
 
 import core._
-import typer._
 import Phases._
 import ast.Trees._
 import Contexts._
@@ -32,7 +31,7 @@ abstract class MacroTransform extends Phase {
 
   class Transformer extends TreeMap(cpy = cpyBetweenPhases) {
 
-    protected def localCtx(tree: Tree)(implicit ctx: Context) = {
+    protected def localCtx(tree: Tree)(implicit ctx: Context): FreshContext = {
       val sym = tree.symbol
       val owner = if (sym is PackageVal) sym.moduleClass else sym
       ctx.fresh.setTree(tree).setOwner(owner)
@@ -46,24 +45,29 @@ abstract class MacroTransform extends Phase {
       flatten(trees.mapconserve(transformStat(_)))
     }
 
-    override def transform(tree: Tree)(implicit ctx: Context): Tree = {
-      tree match {
-        case EmptyValDef =>
+    override def transform(tree: Tree)(implicit ctx: Context): Tree =
+      try
+        tree match {
+          case EmptyValDef =>
+            tree
+          case _: PackageDef | _: MemberDef =>
+            super.transform(tree)(localCtx(tree))
+          case impl @ Template(constr, parents, self, _) =>
+            cpy.Template(tree)(
+              transformSub(constr),
+              transform(parents)(ctx.superCallContext),
+              transformSelf(self),
+              transformStats(impl.body, tree.symbol))
+          case _ =>
+            super.transform(tree)
+        }
+      catch {
+        case ex: TypeError =>
+          ctx.error(ex.toMessage, tree.pos)
           tree
-        case _: PackageDef | _: MemberDef =>
-          super.transform(tree)(localCtx(tree))
-        case impl @ Template(constr, parents, self, _) =>
-          cpy.Template(tree)(
-            transformSub(constr),
-            transform(parents)(ctx.superCallContext),
-            transformSelf(self),
-            transformStats(impl.body, tree.symbol))
-        case _ =>
-          super.transform(tree)
       }
-    }
 
-    def transformSelf(vd: ValDef)(implicit ctx: Context) =
+    def transformSelf(vd: ValDef)(implicit ctx: Context): ValDef =
       cpy.ValDef(vd)(tpt = transform(vd.tpt))
   }
 }

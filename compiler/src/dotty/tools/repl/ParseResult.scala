@@ -7,9 +7,9 @@ import dotc.parsing.Parsers.Parser
 import dotc.parsing.Tokens
 import dotc.util.SourceFile
 import dotc.ast.untpd
-import dotc.reporting._
 
-import results._
+
+import scala.annotation.internal.sharable
 
 /** A parsing result from string input */
 sealed trait ParseResult
@@ -45,7 +45,7 @@ case class UnknownCommand(cmd: String) extends Command
  */
 case class Load(path: String) extends Command
 object Load {
-  val command = ":load"
+  val command: String = ":load"
 }
 
 /** To find out the type of an expression you may simply do:
@@ -57,38 +57,48 @@ object Load {
  */
 case class TypeOf(expr: String) extends Command
 object TypeOf {
-  val command = ":type"
+  val command: String = ":type"
+}
+
+/**
+ * A command that is used to display the documentation associated with
+ * the given expression.
+ */
+case class DocOf(expr: String) extends Command
+object DocOf {
+  val command: String = ":doc"
 }
 
 /** `:imports` lists the imports that have been explicitly imported during the
  *  session
  */
 case object Imports extends Command {
-  val command = ":imports"
+  val command: String = ":imports"
 }
 
 /** Reset the session to the initial state from when the repl program was
  *  started
  */
 case object Reset extends Command {
-  val command = ":reset"
+  val command: String = ":reset"
 }
 
 /** `:quit` exits the repl */
 case object Quit extends Command {
-  val command = ":quit"
+  val command: String = ":quit"
 }
 
 /** `:help` shows the different commands implemented by the Dotty repl */
 case object Help extends Command {
-  val command = ":help"
-  val text =
+  val command: String = ":help"
+  val text: String =
     """The REPL has several commands available:
       |
       |:help                    print this summary
       |:load <path>             interpret lines in a file
       |:quit                    exit the interpreter
       |:type <expression>       evaluate the type of the given expression
+      |:doc <expression>        print the documentation for the given expresssion
       |:imports                 show import history
       |:reset                   reset the repl to its initial state, forgetting all session entries
     """.stripMargin
@@ -99,7 +109,7 @@ object ParseResult {
   @sharable private[this] val CommandExtract = """(:[\S]+)\s*(.*)""".r
 
   private def parseStats(sourceCode: String)(implicit ctx: Context): List[untpd.Tree] = {
-    val source = new SourceFile("<console>", sourceCode.toCharArray)
+    val source = new SourceFile("<console>", sourceCode)
     val parser = new Parser(source)
     val stats = parser.blockStatSeq()
     parser.accept(Tokens.EOF)
@@ -117,19 +127,20 @@ object ParseResult {
         case Imports.command => Imports
         case Load.command => Load(arg)
         case TypeOf.command => TypeOf(arg)
+        case DocOf.command => DocOf(arg)
         case _ => UnknownCommand(cmd)
       }
-      case _ => {
-        val stats = parseStats(sourceCode)
+      case _ =>
+        val reporter = newStoreReporter
+        val stats = parseStats(sourceCode)(ctx.fresh.setReporter(reporter))
 
-        if (ctx.reporter.hasErrors) {
-          SyntaxErrors(sourceCode,
-                       ctx.flushBufferedMessages(),
-                       stats)
-        }
+        if (reporter.hasErrors)
+          SyntaxErrors(
+            sourceCode,
+            reporter.removeBufferedMessages,
+            stats)
         else
           Parsed(sourceCode, stats)
-      }
     }
 
   /** Check if the input is incomplete
@@ -141,7 +152,7 @@ object ParseResult {
     sourceCode match {
       case CommandExtract(_) | "" => false
       case _ => {
-        val reporter = storeReporter
+        val reporter = newStoreReporter
         var needsMore = false
         reporter.withIncompleteHandler(_ => _ => needsMore = true) {
           parseStats(sourceCode)(ctx.fresh.setReporter(reporter))

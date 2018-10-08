@@ -7,7 +7,7 @@ import scala.collection._
 
 import ast.{NavigateAST, Trees, tpd, untpd}
 import core._, core.Decorators.{sourcePos => _, _}
-import Contexts._, Flags._, Names._, NameOps._, Symbols._, SymDenotations._, Trees._, Types._
+import Contexts._, Flags._, Names._, NameOps._, Symbols._, Trees._, Types._
 import util.Positions._, util.SourcePosition
 import core.Denotations.SingleDenotation
 import NameKinds.SimpleNameKind
@@ -23,13 +23,15 @@ object Interactive {
 
   object Include { // should be an enum, really.
     type Set = Int
-    val overridden = 1 // include trees whose symbol is overridden by `sym`
-    val overriding = 2 // include trees whose symbol overrides `sym` (but for performance only in same source file)
-    val references = 4 // include references and not just definitions
+    val overridden: Int = 1 // include trees whose symbol is overridden by `sym`
+    val overriding: Int = 2 // include trees whose symbol overrides `sym` (but for performance only in same source file)
+    val references: Int = 4 // include references
+    val definitions: Int = 8 // include definitions
+    val linkedClass: Int = 16 // include `symbol.linkedClass`
   }
 
   /** Does this tree define a symbol ? */
-  def isDefinition(tree: Tree) =
+  def isDefinition(tree: Tree): Boolean =
     tree.isInstanceOf[DefTree with NameTree]
 
   /** The type of the closest enclosing tree with a type containing position `pos`. */
@@ -39,10 +41,15 @@ object Interactive {
     else path.head.tpe
   }
 
-  /** The closest enclosing tree with a symbol containing position `pos`.
+  /** The closest enclosing tree with a symbol containing position `pos`, or the `EmptyTree`.
    */
   def enclosingTree(trees: List[SourceTree], pos: SourcePosition)(implicit ctx: Context): Tree =
-    pathTo(trees, pos).dropWhile(!_.symbol.exists).headOption.getOrElse(tpd.EmptyTree)
+    enclosingTree(pathTo(trees, pos))
+
+  /** The closes enclosing tree with a symbol, or the `EmptyTree`.
+   */
+  def enclosingTree(path: List[Tree])(implicit ctx: Context): Tree =
+    path.dropWhile(!_.symbol.exists).headOption.getOrElse(tpd.EmptyTree)
 
   /** The source symbol of the closest enclosing tree with a symbol containing position `pos`.
    *
@@ -219,9 +226,9 @@ object Interactive {
       case _  => getScopeCompletions(ctx)
     }
 
-    val sortedCompletions = completions.toList.sortBy(_.name: Name)
-    interactiv.println(i"completion with pos = $pos, prefix = $prefix, termOnly = $termOnly, typeOnly = $typeOnly = $sortedCompletions%, %")
-    (completionPos, sortedCompletions)
+    val completionList = completions.toList
+    interactiv.println(i"completion with pos = $pos, prefix = $prefix, termOnly = $termOnly, typeOnly = $typeOnly = $completionList%, %")
+    (completionPos, completionList)
   }
 
   /** Possible completions of members of `prefix` which are accessible when called inside `boundary` */
@@ -231,8 +238,8 @@ object Interactive {
         val boundaryCtx = ctx.withOwner(boundary)
         def exclude(sym: Symbol) = sym.isAbsent || sym.is(Synthetic) || sym.is(Artifact)
         def addMember(name: Name, buf: mutable.Buffer[SingleDenotation]): Unit =
-          buf ++= prefix.member(name).altsWith(d =>
-            !exclude(d) && d.symbol.isAccessibleFrom(prefix)(boundaryCtx))
+          buf ++= prefix.member(name).altsWith(sym =>
+            !exclude(sym) && sym.isAccessibleFrom(prefix)(boundaryCtx))
           prefix.memberDenots(completionsFilter, addMember).map(_.symbol).toList
       }
       else Nil
@@ -299,6 +306,35 @@ object Interactive {
     buf.toList
   }
 
+  /**
+   * Find trees that match `symbol` in `trees`.
+   *
+   * @param trees    The trees to inspect.
+   * @param includes Whether to include references, definitions, etc.
+   * @param symbol   The symbol for which we want to find references.
+   */
+  def findTreesMatching(trees: List[SourceTree],
+                        includes: Include.Set,
+                        symbol: Symbol)(implicit ctx: Context): List[SourceTree] = {
+    val linkedSym = symbol.linkedClass
+    val includeReferences  = (includes & Include.references) != 0
+    val includeDeclaration = (includes & Include.definitions) != 0
+    val includeLinkedClass = (includes & Include.linkedClass) != 0
+    val predicate: NameTree => Boolean = tree =>
+      (  tree.pos.isSourceDerived
+      && !tree.symbol.isConstructor
+      && (includeDeclaration || !Interactive.isDefinition(tree))
+      && (  Interactive.matchSymbol(tree, symbol, includes)
+         || (  includeDeclaration
+            && includeLinkedClass
+            && linkedSym.exists
+            && Interactive.matchSymbol(tree, linkedSym, includes)
+            )
+         )
+      )
+    namedTrees(trees, includeReferences, predicate)
+  }
+
   /** The reverse path to the node that closest encloses position `pos`,
    *  or `Nil` if no such path exists. If a non-empty path is returned it starts with
    *  the tree closest enclosing `pos` and ends with an element of `trees`.
@@ -331,7 +367,6 @@ object Interactive {
     case Nil | _ :: Nil =>
       ctx.run.runContext.fresh.setCompilationUnit(ctx.compilationUnit)
     case nested :: encl :: rest =>
-      import typer.Typer._
       val outer = contextOfPath(encl :: rest)
       try encl match {
         case tree @ PackageDef(pkg, stats) =>

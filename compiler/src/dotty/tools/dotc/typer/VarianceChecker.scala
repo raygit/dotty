@@ -3,11 +3,11 @@ package typer
 
 import dotty.tools.dotc.ast.{ Trees, tpd }
 import core._
-import Types._, Contexts._, Flags._, Symbols._, Annotations._, Trees._, NameOps._
+import Types._, Contexts._, Flags._, Symbols._, Trees._
 import Decorators._
 import Variances._
+import NameKinds._
 import util.Positions._
-import rewrite.Rewrites.patch
 import config.Printers.variances
 import reporting.trace
 
@@ -17,7 +17,7 @@ import reporting.trace
  */
 object VarianceChecker {
   case class VarianceError(tvar: Symbol, required: Variance)
-  def check(tree: tpd.Tree)(implicit ctx: Context) =
+  def check(tree: tpd.Tree)(implicit ctx: Context): Unit =
     new VarianceChecker()(ctx).Traverser.traverse(tree)
 }
 
@@ -82,21 +82,27 @@ class VarianceChecker()(implicit ctx: Context) {
      *  same is true of the parameters (ValDefs).
      */
     def apply(status: Option[VarianceError], tp: Type): Option[VarianceError] = trace(s"variance checking $tp of $base at $variance", variances) {
-      if (status.isDefined) status
-      else tp match {
-        case tp: TypeRef =>
-          val sym = tp.symbol
-          if (sym.variance != 0 && base.isContainedIn(sym.owner)) checkVarianceOfSymbol(sym)
-          else if (sym.isAliasType) this(status, sym.info.bounds.hi)
-          else foldOver(status, tp)
-        case tp: MethodOrPoly =>
-          this(status, tp.resultType) // params will be checked in their TypeDef or ValDef nodes.
-        case AnnotatedType(_, annot) if annot.symbol == defn.UncheckedVarianceAnnot =>
-          status
-        //case tp: ClassInfo =>
-        //  ???  not clear what to do here yet. presumably, it's all checked at local typedefs
-        case _ =>
-          foldOver(status, tp)
+      try
+        if (status.isDefined) status
+        else tp match {
+          case tp: TypeRef =>
+            val sym = tp.symbol
+            if (sym.variance != 0 && base.isContainedIn(sym.owner)) checkVarianceOfSymbol(sym)
+            else if (sym.isAliasType) this(status, sym.info.bounds.hi)
+            else foldOver(status, tp)
+          case tp: MethodOrPoly =>
+            this(status, tp.resultType) // params will be checked in their TypeDef or ValDef nodes.
+          case AnnotatedType(_, annot) if annot.symbol == defn.UncheckedVarianceAnnot =>
+            status
+          case tp: MatchType =>
+            apply(status, tp.bound)
+          case tp: ClassInfo =>
+            foldOver(status, tp.classParents)
+          case _ =>
+            foldOver(status, tp)
+        }
+      catch {
+        case ex: Throwable => handleRecursive("variance check of", tp.show, ex)
       }
     }
 
@@ -130,20 +136,23 @@ class VarianceChecker()(implicit ctx: Context) {
       def skip =
         !sym.exists ||
         sym.is(PrivateLocal) ||
+        sym.name.is(InlineAccessorName) || // TODO: should we exclude all synthetic members?
         sym.is(TypeParam) && sym.owner.isClass // already taken care of in primary constructor of class
       tree match {
         case defn: MemberDef if skip =>
           ctx.debuglog(s"Skipping variance check of ${sym.showDcl}")
         case tree: TypeDef =>
           checkVariance(sym, tree.pos)
+          tree.rhs match {
+            case rhs: Template => traverseChildren(rhs)
+            case _ =>
+          }
         case tree: ValDef =>
           checkVariance(sym, tree.pos)
         case DefDef(_, tparams, vparamss, _, _) =>
           checkVariance(sym, tree.pos)
           tparams foreach traverse
           vparamss foreach (_ foreach traverse)
-        case Template(_, _, _, body) =>
-          traverseChildren(tree)
         case _ =>
       }
     }

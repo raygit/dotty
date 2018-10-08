@@ -2,8 +2,8 @@ package dotty.tools.dotc
 package transform
 
 import ast.{Trees, tpd}
-import core._, core.Decorators._
-import Contexts._, Flags._, Trees._, Types._, StdNames._, Symbols._
+import core._
+import Contexts._, Trees._, Types._, StdNames._, Symbols._
 import ValueClasses._
 
 object TreeExtractors {
@@ -36,8 +36,8 @@ object TreeExtractors {
   object ValueClassUnbox {
     def unapply(t: Tree)(implicit ctx: Context): Option[Tree] = t match {
       case Apply(sel @ Select(ref, _), Nil) =>
-        val d = ref.tpe.widenDealias.typeSymbol.denot
-        if (isDerivedValueClass(d) && (sel.symbol eq valueClassUnbox(d.asClass))) {
+        val sym = ref.tpe.widenDealias.typeSymbol
+        if (isDerivedValueClass(sym) && (sel.symbol eq valueClassUnbox(sym.asClass))) {
           Some(ref)
         } else
           None

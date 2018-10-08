@@ -12,15 +12,12 @@ import Types._
 import Decorators._
 import DenotTransformers._
 import StdNames._
-import NameOps._
 import NameKinds._
-import Phases._
-import ast.untpd
 import ast.Trees._
 import collection.mutable
 
 object Mixin {
-  val name = "mixin"
+  val name: String = "mixin"
 }
 
 /** This phase performs the following transformations:
@@ -100,12 +97,12 @@ class Mixin extends MiniPhase with SymTransformer { thisPhase =>
 
   override def phaseName: String = Mixin.name
 
-  override def relaxedTypingInGroup = true
+  override def relaxedTypingInGroup: Boolean = true
     // Because it changes number of parameters in trait initializers
 
-  override def runsAfter = Set(Erasure.name)
+  override def runsAfter: Set[String] = Set(Erasure.name)
 
-  override def changesMembers = true  // the phase adds implementions of mixin accessors
+  override def changesMembers: Boolean = true  // the phase adds implementions of mixin accessors
 
   override def transformSym(sym: SymDenotation)(implicit ctx: Context): SymDenotation =
     if (sym.is(Accessor, butNot = Deferred) && sym.owner.is(Trait)) {
@@ -132,11 +129,11 @@ class Mixin extends MiniPhase with SymTransformer { thisPhase =>
             initName,
             Protected | Synthetic | Method,
             sym.info,
-            coord = sym.symbol.coord).enteredAfter(thisPhase))
+            coord = sym.coord).enteredAfter(thisPhase))
     }
   }.asTerm
 
-  override def transformTemplate(impl: Template)(implicit ctx: Context) = {
+  override def transformTemplate(impl: Template)(implicit ctx: Context): Template = {
     val cls = impl.symbol.owner.asClass
     val ops = new MixinOps(cls, thisPhase)
     import ops._
@@ -168,15 +165,19 @@ class Mixin extends MiniPhase with SymTransformer { thisPhase =>
      *  to be used as initializers of trait parameters if the target of the call
      *  is a trait.
      */
-    def transformConstructor(tree: Tree): (Tree, List[Tree]) = {
-      val Apply(sel @ Select(New(_), nme.CONSTRUCTOR), args) = tree
-      val (callArgs, initArgs) = if (tree.symbol.owner.is(Trait)) (Nil, args) else (args, Nil)
-      (superRef(tree.symbol, tree.pos).appliedToArgs(callArgs), initArgs)
+    def transformConstructor(tree: Tree): (Tree, List[Tree]) = tree match {
+      case Block(stats, expr) =>
+        val (scall, inits) = transformConstructor(expr)
+        (cpy.Block(tree)(stats, scall), inits)
+      case _ =>
+        val Apply(sel @ Select(New(_), nme.CONSTRUCTOR), args) = tree
+        val (callArgs, initArgs) = if (tree.symbol.owner.is(Trait)) (Nil, args) else (args, Nil)
+        (superRef(tree.symbol, tree.pos).appliedToArgs(callArgs), initArgs)
     }
 
     val superCallsAndArgs = (
-      for (p <- impl.parents if p.symbol.isConstructor)
-      yield p.symbol.owner -> transformConstructor(p)
+      for (p <- impl.parents; constr = stripBlock(p).symbol if constr.isConstructor)
+      yield constr.owner -> transformConstructor(p)
     ).toMap
     val superCalls = superCallsAndArgs.mapValues(_._1)
     val initArgs = superCallsAndArgs.mapValues(_._2)
@@ -242,7 +243,7 @@ class Mixin extends MiniPhase with SymTransformer { thisPhase =>
           // transformFollowing call is needed to make memoize & lazy vals run
           transformFollowing(DefDef(implementation(getter.asTerm), rhs))
         }
-        else if (isScala2x || was(getter, ParamAccessor)) EmptyTree
+        else if (isScala2x || was(getter, ParamAccessor | Lazy)) EmptyTree
         else initial
       }
     }

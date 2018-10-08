@@ -16,16 +16,16 @@ abstract class SimpleIdentitySet[+Elem <: AnyRef] {
     foreach(buf += _)
     buf.toList
   }
-  def ++ [E >: Elem <: AnyRef](that: SimpleIdentitySet[E]) =
+  def ++ [E >: Elem <: AnyRef](that: SimpleIdentitySet[E]): SimpleIdentitySet[E] =
     ((this: SimpleIdentitySet[E]) /: that.toList)(_ + _)
-  def -- [E >: Elem <: AnyRef](that: SimpleIdentitySet[E]) =
+  def -- [E >: Elem <: AnyRef](that: SimpleIdentitySet[E]): SimpleIdentitySet[Elem] =
     (this /: that.toList)(_ - _)
-  override def toString = toList.mkString("(", ", ", ")")
+  override def toString: String = toList.mkString("(", ", ", ")")
 }
 
 object SimpleIdentitySet {
   object empty extends SimpleIdentitySet[Nothing] {
-    def size = 0
+    def size: Int = 0
     def + [E <: AnyRef](x: E): SimpleIdentitySet[E] =
       new Set1[E](x)
     def - [E <: AnyRef](x: E): SimpleIdentitySet[Nothing] =
@@ -59,7 +59,7 @@ object SimpleIdentitySet {
   private class Set3[+Elem <: AnyRef](x0: AnyRef, x1: AnyRef, x2: AnyRef) extends SimpleIdentitySet[Elem] {
     def size = 3
     def + [E >: Elem <: AnyRef](x: E): SimpleIdentitySet[E] =
-      if (contains(this)) this
+      if (contains(x)) this
       else {
         val xs = new Array[AnyRef](4)
         xs(0) = x0

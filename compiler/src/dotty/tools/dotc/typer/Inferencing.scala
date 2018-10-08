@@ -4,23 +4,19 @@ package typer
 
 import core._
 import ast._
-import Contexts._, Types._, Flags._, Denotations._, Names._, StdNames._, NameOps._, Symbols._
+import Contexts._, Types._, Flags._, Symbols._
 import Trees._
-import Constants._
-import Scopes._
 import ProtoTypes._
 import NameKinds.UniqueName
-import annotation.unchecked
 import util.Positions._
 import util.{Stats, SimpleIdentityMap}
-import util.common._
 import Decorators._
-import Uniques._
-import config.Printers.{typr, constr}
+import config.Printers.typr
 import annotation.tailrec
 import reporting._
 import collection.mutable
-import config.Config
+
+import scala.annotation.internal.sharable
 
 object Inferencing {
 
@@ -42,7 +38,7 @@ object Inferencing {
   /** The fully defined type, where all type variables are forced.
    *  Throws an error if type contains wildcards.
    */
-  def fullyDefinedType(tp: Type, what: String, pos: Position)(implicit ctx: Context) =
+  def fullyDefinedType(tp: Type, what: String, pos: Position)(implicit ctx: Context): Type =
     if (isFullyDefined(tp, ForceDegree.all)) tp
     else throw new Error(i"internal error: type of $what $tp is not fully defined, pos = $pos") // !!! DEBUG
 
@@ -113,7 +109,7 @@ object Inferencing {
             val minimize =
               force.minimizeAll ||
               variance >= 0 && !(
-                force == ForceDegree.noBottom &&
+                !force.allowBottom &&
                 defn.isBottomType(ctx.typeComparer.approximation(tvar.origin, fromBelow = true)))
             if (minimize) instantiate(tvar, fromBelow = true)
             else toMaximize = true
@@ -185,6 +181,8 @@ object Inferencing {
    *
    *  Invariant refinement can be assumed if `PatternType`'s class(es) are final or
    *  case classes (because of `RefChecks#checkCaseClassInheritanceInvariant`).
+   *
+   *  TODO: Update so that GADT symbols can be variant, and we special case final class types in patterns
    */
   def constrainPatternType(tp: Type, pt: Type)(implicit ctx: Context): Boolean = {
     def refinementIsInvariant(tp: Type): Boolean = tp match {
@@ -279,7 +277,7 @@ object Inferencing {
       case tp: TypeRef =>
         val companion = tp.classSymbol.companionModule
         if (companion.exists)
-          companion.termRef.asSeenFrom(tp.prefix, companion.symbol.owner)
+          companion.termRef.asSeenFrom(tp.prefix, companion.owner)
         else NoType
       case _ => NoType
     }
@@ -408,7 +406,7 @@ trait Inferencing { this: Typer =>
       val resultAlreadyConstrained =
         tree.isInstanceOf[Apply] || tree.tpe.isInstanceOf[MethodOrPoly]
       if (!resultAlreadyConstrained)
-        constrainResult(tree.tpe, pt)
+        constrainResult(tree.symbol, tree.tpe, pt)
           // This is needed because it could establish singleton type upper bounds. See i2998.scala.
 
       val tp = tree.tpe.widen
@@ -462,9 +460,9 @@ trait Inferencing { this: Typer =>
 
 /** An enumeration controlling the degree of forcing in "is-dully-defined" checks. */
 @sharable object ForceDegree {
-  class Value(val appliesTo: TypeVar => Boolean, val minimizeAll: Boolean)
-  val none = new Value(_ => false, minimizeAll = false)
-  val all = new Value(_ => true, minimizeAll = false)
-  val noBottom = new Value(_ => true, minimizeAll = false)
+  class Value(val appliesTo: TypeVar => Boolean, val minimizeAll: Boolean, val allowBottom: Boolean = true)
+  val none: Value = new Value(_ => false, minimizeAll = false)
+  val all: Value = new Value(_ => true, minimizeAll = false)
+  val noBottom: Value = new Value(_ => true, minimizeAll = false, allowBottom = false)
 }
 

@@ -15,11 +15,11 @@ import ast.Trees._
 
 class FrontEnd extends Phase {
 
-  override def phaseName = FrontEnd.name
-  override def isTyper = true
+  override def phaseName: String = FrontEnd.name
+  override def isTyper: Boolean = true
   import ast.tpd
 
-  override def allowsImplicitSearch = true
+  override def allowsImplicitSearch: Boolean = true
 
   /** The contexts for compilation units that are parsed but not yet entered */
   private[this] var remaining: List[Context] = Nil
@@ -30,7 +30,7 @@ class FrontEnd extends Phase {
   def stillToBeEntered(name: String): Boolean =
     remaining.exists(_.compilationUnit.toString.endsWith(name + ".scala"))
 
-  def monitor(doing: String)(body: => Unit)(implicit ctx: Context) =
+  def monitor(doing: String)(body: => Unit)(implicit ctx: Context): Unit =
     try body
     catch {
       case NonFatal(ex) =>
@@ -38,7 +38,7 @@ class FrontEnd extends Phase {
         throw ex
     }
 
-  def parse(implicit ctx: Context) = monitor("parsing") {
+  def parse(implicit ctx: Context): Unit = monitor("parsing") {
     val unit = ctx.compilationUnit
     unit.untpdTree =
       if (unit.isJava) new JavaParser(unit.source).parse()
@@ -49,19 +49,13 @@ class FrontEnd extends Phase {
       unit.untpdTree.checkPos(nonOverlapping = !unit.isJava && !ctx.reporter.hasErrors)
   }
 
-  def enterSyms(implicit ctx: Context) = monitor("indexing") {
+  def enterSyms(implicit ctx: Context): Unit = monitor("indexing") {
     val unit = ctx.compilationUnit
     ctx.typer.index(unit.untpdTree)
     typr.println("entered: " + unit.source)
   }
 
-  def enterAnnotations(implicit ctx: Context) = monitor("annotating") {
-    val unit = ctx.compilationUnit
-    ctx.typer.annotate(unit.untpdTree :: Nil)
-    typr.println("annotated: " + unit.source)
-  }
-
-  def typeCheck(implicit ctx: Context) = monitor("typechecking") {
+  def typeCheck(implicit ctx: Context): Unit = monitor("typechecking") {
     val unit = ctx.compilationUnit
     unit.tpdTree = ctx.typer.typedExpr(unit.untpdTree)
     typr.println("typed: " + unit.source)
@@ -76,7 +70,7 @@ class FrontEnd extends Phase {
     case _ => NoSymbol
   }
 
-  protected def discardAfterTyper(unit: CompilationUnit)(implicit ctx: Context) =
+  protected def discardAfterTyper(unit: CompilationUnit)(implicit ctx: Context): Boolean =
     unit.isJava || firstTopLevelDef(unit.tpdTree :: Nil).isPrimitiveValueClass
 
   override def runOn(units: List[CompilationUnit])(implicit ctx: Context): List[CompilationUnit] = {
@@ -91,7 +85,6 @@ class FrontEnd extends Phase {
       enterSyms(remaining.head)
       remaining = remaining.tail
     }
-    unitContexts.foreach(enterAnnotations(_))
     unitContexts.foreach(typeCheck(_))
     record("total trees after typer", ast.Trees.ntrees)
     unitContexts.map(_.compilationUnit).filterNot(discardAfterTyper)
@@ -105,5 +98,5 @@ class FrontEnd extends Phase {
 }
 
 object FrontEnd {
-  val name = "frontend"
+  val name: String = "frontend"
 }
