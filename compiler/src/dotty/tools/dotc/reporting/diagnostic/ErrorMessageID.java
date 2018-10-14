@@ -134,7 +134,12 @@ public enum ErrorMessageID {
     TermMemberNeedsNeedsResultTypeForImplicitSearchID,
     CaseClassCannotExtendEnumID,
     ValueClassParameterMayNotBeCallByNameID,
-    NotAnExtractorID
+    NotAnExtractorID,
+    MemberWithSameNameAsStaticID,
+    PureExpressionInStatementPositionID,
+    TraitCompanionWithMutableStaticID,
+    LazyStaticFieldID,
+    StaticOverridingNonStaticMembersID
     ;
 
     public int errorNumber() {

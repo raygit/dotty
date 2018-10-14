@@ -2131,4 +2131,43 @@ object messages {
            |For this reason, you can also define patterns through `unapplySeq` which returns `Option[Seq[T]]`.
            |This mechanism is used for instance in pattern `case List(x1, ..., xn)`""".stripMargin
   }
+
+  case class MemberWithSameNameAsStatic()(implicit val ctx: Context)
+    extends Message(MemberWithSameNameAsStaticID) {
+
+    override def msg: String = hl"Companion classes cannot define members with same name as a @static member"
+    override def kind: String = "Syntax"
+    override def explanation: String = ""
+  }
+
+  case class PureExpressionInStatementPosition(stat: untpd.Tree, exprOwner: Symbol)(implicit ctx: Context)
+    extends Message(PureExpressionInStatementPositionID) {
+
+    val kind = "Potential Issue"
+    val msg = "a pure expression does nothing in statement position; you may be omitting necessary parentheses"
+    val explanation =
+      hl"""The pure expression `$stat` doesn't have any side effect and its result is not assigned elsewhere.
+          |It can be removed without changing the semantics of the program. This may indicate an error.""".stripMargin
+  }
+
+  case class TraitCompanionWithMutableStatic()(implicit val ctx: Context)
+    extends Message(TraitCompanionWithMutableStaticID) {
+    override def msg: String = hl"Companion of traits cannot define mutable @static fields"
+    override def kind: String = "Syntax"
+    override def explanation: String = ""
+  }
+
+  case class LazyStaticField()(implicit val ctx: Context)
+    extends Message(LazyStaticFieldID) {
+    override def msg: String = hl"Lazy @static fields are not supported"
+    override def kind: String = "Syntax"
+    override def explanation: String = ""
+  }
+
+  case class StaticOverridingNonStaticMembers()(implicit val ctx: Context)
+    extends Message(StaticOverridingNonStaticMembersID) {
+    override def msg: String = hl"@static members cannot override or implement non-static ones"
+    override def kind: String = "Syntax"
+    override def explanation: String = ""
+  }
 }
