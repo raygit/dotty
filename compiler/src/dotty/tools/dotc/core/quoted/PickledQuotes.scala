@@ -22,12 +22,6 @@ import scala.reflect.ClassTag
 object PickledQuotes {
   import tpd._
 
-  /** Pickle the tree of the quoted.Expr */
-  def pickleExpr(tree: Tree)(implicit ctx: Context): scala.quoted.Expr[Any] = {
-    val pickled = pickleQuote(tree)
-    scala.runtime.quoted.Unpickler.unpickleExpr(pickled, Nil)
-  }
-
   /** Pickle the tree of the quote into strings */
   def pickleQuote(tree: Tree)(implicit ctx: Context): scala.runtime.quoted.Unpickler.Pickled = {
     if (ctx.reporter.hasErrors) Nil
@@ -89,12 +83,12 @@ object PickledQuotes {
     if (tree.pos.exists)
       new PositionPickler(pickler, treePkl.buf.addrOfTree).picklePositions(tree :: Nil)
 
-    if (pickling ne noPrinter)
+    if (quotePickling ne noPrinter)
       println(i"**** pickling quote of \n${tree.show}")
 
     val pickled = pickler.assembleParts()
 
-    if (pickling ne noPrinter)
+    if (quotePickling ne noPrinter)
       new TastyPrinter(pickled).printContents()
 
     pickled
@@ -102,7 +96,7 @@ object PickledQuotes {
 
   /** Unpickle TASTY bytes into it's tree */
   private def unpickle(bytes: Array[Byte], splices: Seq[Any], isType: Boolean)(implicit ctx: Context): Tree = {
-    if (pickling ne noPrinter) {
+    if (quotePickling ne noPrinter) {
       println(i"**** unpickling quote from TASTY")
       new TastyPrinter(bytes).printContents()
     }
@@ -112,7 +106,7 @@ object PickledQuotes {
     unpickler.enter(Set.empty)
     val tree = unpickler.tree
 
-    if (pickling ne noPrinter)
+    if (quotePickling ne noPrinter)
       println(i"**** unpickle quote ${tree.show}")
 
     tree

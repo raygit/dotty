@@ -3,17 +3,9 @@ package dotc
 
 import core._
 import Contexts._
-import Periods._
-import Symbols._
-import Types._
-import Scopes._
-import typer.{FrontEnd, ImportInfo, RefChecks, Typer}
-import reporting.{ConsoleReporter, Reporter}
+import typer.{FrontEnd, RefChecks}
 import Phases.Phase
 import transform._
-import util.FreshNameCreator
-import core.DenotTransformers.DenotTransformer
-import core.Denotations.SingleDenotation
 import dotty.tools.backend.jvm.{CollectSuperCalls, GenBCode, LabelDefs}
 import dotty.tools.dotc.transform.localopt.StringInterpolatorOpt
 
@@ -52,6 +44,7 @@ class Compiler {
   /** Phases dealing with TASTY tree pickling and unpickling */
   protected def picklerPhases: List[List[Phase]] =
     List(new Pickler) ::            // Generate TASTY info
+    List(new InlineCalls) ::        // β-reduce inline calls
     List(new ReifyQuotes) ::        // Turn quoted trees into explicit run-time data structures
     Nil
 
@@ -77,8 +70,7 @@ class Compiler {
          new ExplicitOuter,          // Add accessors to outer classes from nested ones.
          new ExplicitSelf,           // Make references to non-trivial self types explicit as casts
          new StringInterpolatorOpt,  // Optimizes raw and s string interpolators by rewriting them to string concatentations
-         new CrossCastAnd,           // Normalize selections involving intersection types.
-         new Splitter) ::            // Expand selections involving union types into conditionals
+         new CrossCastAnd) ::        // Normalize selections involving intersection types.
     List(new PruneErasedDefs,        // Drop erased definitions from scopes and simplify erased expressions
          new VCInlineMethods,        // Inlines calls to value class methods
          new SeqLiterals,            // Express vararg arguments as arrays
@@ -126,8 +118,8 @@ class Compiler {
     List(new GenBCode) ::            // Generate JVM bytecode
     Nil
 
-  var runId = 1
-  def nextRunId = {
+  var runId: Int = 1
+  def nextRunId: Int = {
     runId += 1; runId
   }
 

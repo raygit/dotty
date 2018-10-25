@@ -7,7 +7,7 @@ import scala.collection._
 
 import ast.{NavigateAST, Trees, tpd, untpd}
 import core._, core.Decorators.{sourcePos => _, _}
-import Contexts._, Flags._, Names._, NameOps._, Symbols._, SymDenotations._, Trees._, Types._
+import Contexts._, Flags._, Names._, NameOps._, Symbols._, Trees._, Types._
 import util.Positions._, util.SourcePosition
 import core.Denotations.SingleDenotation
 import NameKinds.SimpleNameKind
@@ -23,15 +23,15 @@ object Interactive {
 
   object Include { // should be an enum, really.
     type Set = Int
-    val overridden = 1 // include trees whose symbol is overridden by `sym`
-    val overriding = 2 // include trees whose symbol overrides `sym` (but for performance only in same source file)
-    val references = 4 // include references
-    val definitions = 8 // include definitions
-    val linkedClass = 16 // include `symbol.linkedClass`
+    val overridden: Int = 1 // include trees whose symbol is overridden by `sym`
+    val overriding: Int = 2 // include trees whose symbol overrides `sym` (but for performance only in same source file)
+    val references: Int = 4 // include references
+    val definitions: Int = 8 // include definitions
+    val linkedClass: Int = 16 // include `symbol.linkedClass`
   }
 
   /** Does this tree define a symbol ? */
-  def isDefinition(tree: Tree) =
+  def isDefinition(tree: Tree): Boolean =
     tree.isInstanceOf[DefTree with NameTree]
 
   /** The type of the closest enclosing tree with a type containing position `pos`. */
@@ -51,12 +51,56 @@ object Interactive {
   def enclosingTree(path: List[Tree])(implicit ctx: Context): Tree =
     path.dropWhile(!_.symbol.exists).headOption.getOrElse(tpd.EmptyTree)
 
-  /** The source symbol of the closest enclosing tree with a symbol containing position `pos`.
+  /**
+   * The source symbol that is the closest to `path`.
    *
-   *  @see sourceSymbol
+   * @param path The path to the tree whose symbol to extract.
+   * @return The source symbol that is the closest to `path`.
+   *
+   * @see sourceSymbol
    */
-  def enclosingSourceSymbol(trees: List[SourceTree], pos: SourcePosition)(implicit ctx: Context): Symbol =
-    sourceSymbol(enclosingTree(trees, pos).symbol)
+  def enclosingSourceSymbol(path: List[Tree])(implicit ctx: Context): Symbol = {
+    val sym = path match {
+      // For a named arg, find the target `DefDef` and jump to the param
+      case NamedArg(name, _) :: Apply(fn, _) :: _ =>
+        val funSym = fn.symbol
+        if (funSym.name == StdNames.nme.copy
+          && funSym.is(Synthetic)
+          && funSym.owner.is(CaseClass)) {
+            funSym.owner.info.member(name).symbol
+        } else {
+          val classTree = funSym.topLevelClass.asClass.rootTree
+          tpd.defPath(funSym, classTree).lastOption.flatMap {
+            case DefDef(_, _, paramss, _, _) =>
+              paramss.flatten.find(_.name == name).map(_.symbol)
+          }.getOrElse(fn.symbol)
+        }
+
+      // For constructor calls, return the `<init>` that was selected
+      case _ :: (_:  New) :: (select: Select) :: _ =>
+        select.symbol
+
+      case _ =>
+        enclosingTree(path).symbol
+    }
+    Interactive.sourceSymbol(sym)
+  }
+
+  /**
+   * The source symbol that is the closest to the path to `pos` in `trees`.
+   *
+   * Computes the path from the tree with position `pos` in `trees`, and extract it source
+   * symbol.
+   *
+   * @param trees The trees in which to look for a path to `pos`.
+   * @param pos   That target position of the path.
+   * @return The source symbol that is the closest to the computed path.
+   *
+   * @see sourceSymbol
+   */
+  def enclosingSourceSymbol(trees: List[SourceTree], pos: SourcePosition)(implicit ctx: Context): Symbol = {
+    enclosingSourceSymbol(pathTo(trees, pos))
+  }
 
   /** A symbol related to `sym` that is defined in source code.
    *
@@ -265,12 +309,12 @@ object Interactive {
       namedTrees(trees, (include & Include.references) != 0, matchSymbol(_, sym, include))
 
   /** Find named trees with a non-empty position whose name contains `nameSubstring` in `trees`.
-   *
-   *  @param includeReferences  If true, include references and not just definitions
    */
-  def namedTrees(trees: List[SourceTree], includeReferences: Boolean, nameSubstring: String)
-   (implicit ctx: Context): List[SourceTree] =
-    namedTrees(trees, includeReferences, _.show.toString.contains(nameSubstring))
+  def namedTrees(trees: List[SourceTree], nameSubstring: String)
+   (implicit ctx: Context): List[SourceTree] = {
+    val predicate: NameTree => Boolean = _.name.toString.contains(nameSubstring)
+    namedTrees(trees, includeReferences = false, predicate)
+  }
 
   /** Find named trees with a non-empty position satisfying `treePredicate` in `trees`.
    *
@@ -321,8 +365,7 @@ object Interactive {
     val includeDeclaration = (includes & Include.definitions) != 0
     val includeLinkedClass = (includes & Include.linkedClass) != 0
     val predicate: NameTree => Boolean = tree =>
-      (  tree.pos.isSourceDerived
-      && !tree.symbol.isConstructor
+      (  !tree.symbol.isPrimaryConstructor
       && (includeDeclaration || !Interactive.isDefinition(tree))
       && (  Interactive.matchSymbol(tree, symbol, includes)
          || (  includeDeclaration
@@ -367,7 +410,6 @@ object Interactive {
     case Nil | _ :: Nil =>
       ctx.run.runContext.fresh.setCompilationUnit(ctx.compilationUnit)
     case nested :: encl :: rest =>
-      import typer.Typer._
       val outer = contextOfPath(encl :: rest)
       try encl match {
         case tree @ PackageDef(pkg, stats) =>
@@ -413,4 +455,39 @@ object Interactive {
   /** The first tree in the path that is a definition. */
   def enclosingDefinitionInPath(path: List[Tree])(implicit ctx: Context): Tree =
     path.find(_.isInstanceOf[DefTree]).getOrElse(EmptyTree)
+
+  /**
+   * Find the definitions of the symbol at the end of `path`.
+   *
+   * @param path   The path to the symbol for which we want the definitions.
+   * @param driver The driver responsible for `path`.
+   * @return The definitions for the symbol at the end of `path`.
+   */
+  def findDefinitions(path: List[Tree], driver: InteractiveDriver)(implicit ctx: Context): List[SourceTree] = {
+    val sym = enclosingSourceSymbol(path)
+    if (sym == NoSymbol) Nil
+    else {
+      val enclTree = enclosingTree(path)
+
+      val (trees, include) =
+        if (enclTree.isInstanceOf[MemberDef])
+          (driver.allTreesContaining(sym.name.sourceModuleName.toString),
+            Include.definitions | Include.overriding | Include.overridden)
+        else sym.topLevelClass match {
+          case cls: ClassSymbol =>
+            val trees = Option(cls.sourceFile).map(InteractiveDriver.toUri) match {
+              case Some(uri) if driver.openedTrees.contains(uri) =>
+                driver.openedTrees(uri)
+              case _ => // Symbol comes from the classpath
+                SourceTree.fromSymbol(cls).toList
+            }
+            (trees, Include.definitions | Include.overriding)
+          case _ =>
+            (Nil, 0)
+        }
+
+      findTreesMatching(trees, include, sym)
+    }
+  }
+
 }

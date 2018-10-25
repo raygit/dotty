@@ -4,28 +4,35 @@ package core
 package tasty
 
 import Comments.CommentsContext
-import Contexts._, Symbols._, Types._, Scopes._, SymDenotations._, Names._, NameOps._
-import StdNames._, Denotations._, Flags._, Constants._, Annotations._
+import Contexts._
+import Symbols._
+import Types._
+import Scopes._
+import SymDenotations._
+import Names._
+import NameOps._
+import StdNames._
+import Flags._
+import Constants._
+import Annotations._
 import NameKinds._
 import typer.Checking.checkNonCyclic
 import util.Positions._
-import ast.{tpd, untpd, Trees}
+import ast.{TreeTypeMap, Trees, tpd, untpd}
 import Trees._
 import Decorators._
 import transform.SymUtils._
-import TastyUnpickler._, TastyBuffer._
-import scala.annotation.{tailrec, switch}
+import TastyBuffer._
+
+import scala.annotation.{switch, tailrec}
 import scala.collection.mutable.ListBuffer
-import scala.collection.{ mutable, immutable }
+import scala.collection.mutable
 import config.Printers.pickling
-import typer.Checking
-import config.Config
 import core.quoted.PickledQuotes
+
 import scala.quoted
 import scala.quoted.Types.TreeType
 import scala.quoted.Exprs.TastyTreeExpr
-import typer.Inliner.typedInline
-
 import scala.annotation.internal.sharable
 
 /** Unpickler for typed trees
@@ -115,8 +122,8 @@ class TreeUnpickler(reader: TastyReader,
   class TreeReader(val reader: TastyReader) {
     import reader._
 
-    def forkAt(start: Addr) = new TreeReader(subReader(start, endAddr))
-    def fork = forkAt(currentAddr)
+    def forkAt(start: Addr): TreeReader = new TreeReader(subReader(start, endAddr))
+    def fork: TreeReader = forkAt(currentAddr)
 
     def skipTree(tag: Int): Unit =
       if (tag >= firstLengthTreeTag) goto(readEnd())
@@ -356,8 +363,6 @@ class TreeUnpickler(reader: TastyReader,
               readTypeRef() match {
                 case binder: LambdaType => binder.paramRefs(readNat())
               }
-            case HOLE =>
-              readHole(end, isType = true).tpe
           }
         assert(currentAddr == end, s"$start $currentAddr $end ${astTagToString(tag)}")
         result
@@ -557,7 +562,7 @@ class TreeUnpickler(reader: TastyReader,
         sym.completer.withDecls(newScope)
         forkAt(templateStart).indexTemplateParams()(localContext(sym))
       }
-      else if (typedInline && sym.isInlineMethod)
+      else if (sym.isInlineMethod)
         sym.addAnnotation(LazyBodyAnnotation { ctx0 =>
           implicit val ctx: Context = localContext(sym)(ctx0).addMode(Mode.ReadPositions)
             // avoids space leaks by not capturing the current context
@@ -645,14 +650,9 @@ class TreeUnpickler(reader: TastyReader,
         val lazyAnnotTree = readLaterWithOwner(end, rdr => ctx => rdr.readTerm()(ctx))
 
         owner =>
-          if (tp.isRef(defn.BodyAnnot)) {
-            assert(!typedInline)
-            LazyBodyAnnotation(implicit ctx => lazyAnnotTree(owner).complete)
-          }
-          else
-            Annotation.deferredSymAndTree(
-              implicit ctx => tp.typeSymbol,
-              implicit ctx => lazyAnnotTree(owner).complete)
+          Annotation.deferredSymAndTree(
+            implicit ctx => tp.typeSymbol,
+            implicit ctx => lazyAnnotTree(owner).complete)
     }
 
     /** Create symbols for the definitions in the statement sequence between
@@ -700,7 +700,7 @@ class TreeUnpickler(reader: TastyReader,
     /** Create symbols the longest consecutive sequence of parameters with given
      *  `tag` starting at current address.
      */
-    def indexParams(tag: Int)(implicit ctx: Context) =
+    def indexParams(tag: Int)(implicit ctx: Context): Unit =
       while (nextByte == tag) {
         symbolAtCurrent()
         skipTree()
@@ -709,7 +709,7 @@ class TreeUnpickler(reader: TastyReader,
     /** Create symbols for all type and value parameters of template starting
      *  at current address.
      */
-    def indexTemplateParams()(implicit ctx: Context) = {
+    def indexTemplateParams()(implicit ctx: Context): Unit = {
       assert(readByte() == TEMPLATE)
       readEnd()
       indexParams(TYPEPARAM)
@@ -751,7 +751,7 @@ class TreeUnpickler(reader: TastyReader,
       def readRhs(implicit ctx: Context) =
         if (nothingButMods(end))
           EmptyTree
-        else if (sym.isInlineMethod && typedInline)
+        else if (sym.isInlineMethod)
           // The body of an inline method is stored in an annotation, so no need to unpickle it again
           new Trees.Lazy[Tree] {
             def complete(implicit ctx: Context) = typer.Inliner.bodyToInline(sym)
@@ -1174,17 +1174,32 @@ class TreeUnpickler(reader: TastyReader,
       setPos(start, tree)
     }
 
-    def readTpt()(implicit ctx: Context): Tree =
-      if (nextByte == SHAREDterm) {
-        readByte()
-        forkAt(readAddr()).readTpt()
+    def readTpt()(implicit ctx: Context): Tree = {
+      nextByte match {
+        case SHAREDterm =>
+          readByte()
+          forkAt(readAddr()).readTpt()
+        case BLOCK =>
+          readByte()
+          val end = readEnd()
+          val typeReader = fork
+          skipTree()
+          val aliases = readStats(ctx.owner, end)
+          val tpt = typeReader.readTpt()
+          Block(aliases, tpt)
+        case HOLE =>
+          readByte()
+          val end = readEnd()
+          readHole(end, isType = true)
+        case _ =>
+          if (isTypeTreeTag(nextByte)) readTerm()
+          else {
+            val start = currentAddr
+            val tp = readType()
+            if (tp.exists) setPos(start, TypeTree(tp)) else EmptyTree
+          }
       }
-      else if (isTypeTreeTag(nextByte)) readTerm()
-      else {
-        val start = currentAddr
-        val tp = readType()
-        if (tp.exists) setPos(start, TypeTree(tp)) else EmptyTree
-      }
+    }
 
     def readCases(end: Addr)(implicit ctx: Context): List[CaseDef] =
       collectWhile((nextUnsharedTag == CASEDEF) && currentAddr != end) {
@@ -1323,7 +1338,7 @@ class TreeUnpickler(reader: TastyReader,
       }
     }
 
-    override def toString =
+    override def toString: String =
       s"OwnerTree(${addr.index}, ${end.index}, ${if (myChildren == null) "?" else myChildren.mkString(" ")})"
   }
 }
