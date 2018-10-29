@@ -34,12 +34,22 @@ object ExposedValues extends AutoPlugin {
 }
 
 object Build {
+  val scalacVersion = "2.12.7"
 
   val baseVersion = "0.11.0"
-  val scalacVersion = "2.12.7"
+  val baseSbtDottyVersion = "0.2.6"
+
+  // Versions used by the vscode extension to create a new project
+  // This should be the latest published releases.
+  // TODO: Have the vscode extension fetch these numbers from the Internet
+  // instead of hardcoding them ?
+  val publishedDottyVersion = "0.11.0-bin-20181017-3253921-NIGHTLY" // Using a nightly for now to get worksheet support
+  val publishedSbtDottyVersion = "0.2.5"
+
 
   val dottyOrganization = "ch.epfl.lamp"
   val dottyGithubUrl = "https://github.com/lampepfl/dotty"
+
 
   val isRelease = sys.env.get("RELEASEBUILD") == Some("yes")
 
@@ -56,8 +66,7 @@ object Build {
 
   val sbtDottyName = "sbt-dotty"
   val sbtDottyVersion = {
-    val base = "0.2.5"
-    if (isRelease) base else base + "-SNAPSHOT"
+    if (isRelease) baseSbtDottyVersion else baseSbtDottyVersion + "-SNAPSHOT"
   }
 
   val agentOptions = List(
@@ -103,9 +112,7 @@ object Build {
   // Settings used to configure the test language server
   lazy val ideTestsCompilerVersion = taskKey[String]("Compiler version to use in IDE tests")
   lazy val ideTestsCompilerArguments = taskKey[Seq[String]]("Compiler arguments to use in IDE tests")
-  lazy val ideTestsSourceDirectories = taskKey[Seq[File]]("Source directories to use in IDE tests")
   lazy val ideTestsDependencyClasspath = taskKey[Seq[File]]("Dependency classpath to use in IDE tests")
-  lazy val ideTestsClassDirectory = taskKey[File]("Class directory to use in IDE tests")
 
   // Settings shared by the build (scoped in ThisBuild). Used in build.sbt
   lazy val thisBuildSettings = Def.settings(
@@ -381,10 +388,15 @@ object Build {
     dottyLib + File.pathSeparator + dottyInterfaces + File.pathSeparator + otherDeps
   }
 
-  lazy val semanticDBSettings = Seq(
+  lazy val semanticdbSettings = Seq(
     baseDirectory in (Compile, run) := baseDirectory.value / "..",
     baseDirectory in Test := baseDirectory.value / "..",
-    libraryDependencies += "com.novocode" % "junit-interface" % "0.11" % Test
+    unmanagedSourceDirectories in Test += baseDirectory.value / "input" / "src" / "main" / "scala",
+    libraryDependencies ++= List(
+      ("org.scalameta" %% "semanticdb" % "4.0.0" % Test).withDottyCompat(scalaVersion.value),
+      "com.novocode" % "junit-interface" % "0.11" % Test,
+      "com.googlecode.java-diff-utils" % "diffutils" % "1.3.0" % Test
+    )
   )
 
   // Settings shared between dotty-doc and dotty-doc-bootstrapped
@@ -883,7 +895,6 @@ object Build {
     settings(
       ideTestsCompilerVersion := (version in `dotty-compiler`).value,
       ideTestsCompilerArguments := (scalacOptions in `dotty-compiler`).value,
-      ideTestsSourceDirectories := Seq((baseDirectory in ThisBuild).value / "out" / "ide-tests" / "src"),
       ideTestsDependencyClasspath := {
         val dottyLib = (classDirectory in `dotty-library-bootstrapped` in Compile).value
         val scalaLib =
@@ -894,13 +905,10 @@ object Build {
             .toList
         dottyLib :: scalaLib
       },
-      ideTestsClassDirectory := (baseDirectory in ThisBuild).value / "out" / "ide-tests" / "out",
       buildInfoKeys in Test := Seq[BuildInfoKey](
         ideTestsCompilerVersion,
         ideTestsCompilerArguments,
-        ideTestsSourceDirectories,
-        ideTestsDependencyClasspath,
-        ideTestsClassDirectory
+        ideTestsDependencyClasspath
       ),
       buildInfoPackage in Test := "dotty.tools.languageserver.util.server",
       BuildInfoPlugin.buildInfoScopedSettings(Test),
@@ -910,7 +918,7 @@ object Build {
   lazy val `dotty-bench` = project.in(file("bench")).asDottyBench(NonBootstrapped)
   lazy val `dotty-bench-bootstrapped` = project.in(file("bench")).asDottyBench(Bootstrapped)
 
-  lazy val `dotty-semanticdb` = project.in(file("semanticdb")).asDottySemanticDB(Bootstrapped)
+  lazy val `dotty-semanticdb` = project.in(file("semanticdb")).asDottySemanticdb(Bootstrapped)
 
   // Depend on dotty-library so that sbt projects using dotty automatically
   // depend on the dotty-library
@@ -985,11 +993,14 @@ object Build {
       includeFilter in unmanagedSources := NothingFilter | "*.ts" | "**.json",
       watchSources in Global ++= (unmanagedSources in Compile).value,
       resourceGenerators in Compile += Def.task {
-        val defaultIDEConfig = baseDirectory.value / "out" / "default-dotty-ide-config"
-        IO.write(defaultIDEConfig, dottyVersion)
+        // Resources that will be copied when bootstrapping a new project
+        val buildSbtFile = baseDirectory.value / "out" / "build.sbt"
+        IO.write(buildSbtFile,
+          s"""scalaVersion := "$publishedDottyVersion"""")
         val dottyPluginSbtFile = baseDirectory.value / "out" / "dotty-plugin.sbt"
-        IO.write(dottyPluginSbtFile, s"""addSbtPlugin("$dottyOrganization" % "$sbtDottyName" % "$sbtDottyVersion")""")
-        Seq(defaultIDEConfig, dottyPluginSbtFile)
+        IO.write(dottyPluginSbtFile,
+          s"""addSbtPlugin("$dottyOrganization" % "$sbtDottyName" % "$publishedSbtDottyVersion")""")
+        Seq(buildSbtFile, dottyPluginSbtFile)
       },
       compile in Compile := Def.task {
         val workingDir = baseDirectory.value
@@ -1305,9 +1316,9 @@ object Build {
       settings(commonBenchmarkSettings).
       enablePlugins(JmhPlugin)
 
-    def asDottySemanticDB(implicit mode: Mode): Project = project.withCommonSettings.
+    def asDottySemanticdb(implicit mode: Mode): Project = project.withCommonSettings.
       dependsOn(dottyCompiler).
-      settings(semanticDBSettings)
+      settings(semanticdbSettings)
 
     def asDist(implicit mode: Mode): Project = project.
       enablePlugins(PackPlugin).

@@ -484,8 +484,10 @@ object Trees {
 
   /** { stats; expr } */
   case class Block[-T >: Untyped] private[ast] (stats: List[Tree[T]], expr: Tree[T])
-    extends TermTree[T] {
+    extends Tree[T] {
     type ThisTree[-T >: Untyped] = Block[T]
+    override def isType: Boolean = expr.isType
+    override def isTerm: Boolean = !isType // this will classify empty trees as terms, which is necessary
   }
 
   /** if cond then thenp else elsep */
@@ -583,9 +585,8 @@ object Trees {
 
   /** A tree representing inlined code.
    *
-   *  @param  call      Info about the original call that was inlined
-   *                    Until PostTyper, this is the full call, afterwards only
-   *                    a reference to the toplevel class from which the call was inlined.
+   *  @param  call      Info about the original call that was inlined.
+   *                    Only a reference to the toplevel class from which the call was inlined.
    *  @param  bindings  Bindings for proxies to be used in the inlined code
    *  @param  expansion The inlined tree, minus bindings.
    *

@@ -1794,24 +1794,23 @@ class Typer extends Namer
 
   /** Translate tuples of all arities */
   def typedTuple(tree: untpd.Tuple, pt: Type)(implicit ctx: Context): Tree = {
-    val elems = tree.trees
-    val arity = elems.length
+    val arity = tree.trees.length
     if (arity <= Definitions.MaxTupleArity)
       typed(desugar.smallTuple(tree).withPos(tree.pos), pt)
     else {
       val pts =
         if (arity == pt.tupleArity) pt.tupleElementTypes
-        else elems.map(_ => defn.AnyType)
-      val elems1 = (tree.trees, pts).zipped.map(typed(_, _))
+        else List.fill(arity)(defn.AnyType)
+      val elems = (tree.trees, pts).zipped.map(typed(_, _))
       if (ctx.mode.is(Mode.Type))
-        (elems1 :\ (TypeTree(defn.UnitType): Tree))((elemTpt, elemTpts) =>
+        (elems :\ (TypeTree(defn.UnitType): Tree))((elemTpt, elemTpts) =>
           AppliedTypeTree(TypeTree(defn.PairType), List(elemTpt, elemTpts)))
           .withPos(tree.pos)
       else {
         val tupleXXLobj = untpd.ref(defn.TupleXXLModule.termRef)
-        val app = untpd.cpy.Apply(tree)(tupleXXLobj, elems1.map(untpd.TypedSplice(_)))
+        val app = untpd.cpy.Apply(tree)(tupleXXLobj, elems.map(untpd.TypedSplice(_)))
           .withPos(tree.pos)
-        val app1 = typed(app, pt)
+        val app1 = typed(app, defn.TupleXXLType)
         if (ctx.mode.is(Mode.Pattern)) app1
         else {
           val elemTpes = (elems, pts).zipped.map((elem, pt) =>
@@ -2365,7 +2364,12 @@ class Typer extends Namer
             }
           } else issueErrors()
         }
-        else readaptSimplified(tpd.Apply(tree, args))
+        else tree match {
+          case tree: Block =>
+            readaptSimplified(tpd.Block(tree.stats, tpd.Apply(tree.expr, args)))
+          case _ =>
+            readaptSimplified(tpd.Apply(tree, args))
+        }
       }
       addImplicitArgs(argCtx(tree))
     }
@@ -2440,13 +2444,6 @@ class Typer extends Namer
       else if (ctx.mode is Mode.Pattern) {
         checkEqualityEvidence(tree, pt)
         tree
-      }
-      else if (Inliner.isInlineable(tree) &&
-               !ctx.settings.YnoInline.value &&
-               !ctx.isAfterTyper &&
-               !ctx.reporter.hasErrors &&
-               tree.tpe <:< pt) {
-        readaptSimplified(Inliner.inlineCall(tree, pt))
       }
       else if (tree.tpe <:< pt) {
         if (pt.hasAnnotation(defn.InlineParamAnnot))

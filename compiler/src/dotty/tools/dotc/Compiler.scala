@@ -44,6 +44,7 @@ class Compiler {
   /** Phases dealing with TASTY tree pickling and unpickling */
   protected def picklerPhases: List[List[Phase]] =
     List(new Pickler) ::            // Generate TASTY info
+    List(new InlineCalls) ::        // β-reduce inline calls
     List(new ReifyQuotes) ::        // Turn quoted trees into explicit run-time data structures
     Nil
 
@@ -69,8 +70,7 @@ class Compiler {
          new ExplicitOuter,          // Add accessors to outer classes from nested ones.
          new ExplicitSelf,           // Make references to non-trivial self types explicit as casts
          new StringInterpolatorOpt,  // Optimizes raw and s string interpolators by rewriting them to string concatentations
-         new CrossCastAnd,           // Normalize selections involving intersection types.
-         new Splitter) ::            // Expand selections involving union types into conditionals
+         new CrossCastAnd) ::        // Normalize selections involving intersection types.
     List(new PruneErasedDefs,        // Drop erased definitions from scopes and simplify erased expressions
          new VCInlineMethods,        // Inlines calls to value class methods
          new SeqLiterals,            // Express vararg arguments as arrays

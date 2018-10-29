@@ -40,6 +40,17 @@
         ]
       }
     ],
+    "configuration": {
+      "type": "object",
+      "title": "Dotty configuration",
+      "properties": {
+        "dotty.runWorksheetOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "If true, saving a worksheet will also run it."
+        }
+      }
+    },
     "commands": [
       {
         "command": "dotty.worksheet.run",
@@ -48,7 +59,7 @@
       },
       {
         "command": "dotty.worksheet.cancel",
-        "title": "Cancel worksheet evaluation",
+        "title": "Cancel running worksheet",
         "category": "Scala"
       }
     ],
@@ -73,10 +84,11 @@
     "scala-lang.scala"
   ],
   "dependencies": {
-    "child-process-promise": "^2.2.1",
+    "promisify-child-process": "^2.1.2",
     "compare-versions": "^3.4.0",
     "vscode-languageclient": "^5.1.0",
-    "vscode-languageserver": "^5.1.0"
+    "vscode-languageserver": "^5.1.0",
+    "vscode-jsonrpc": "4.0.0"
   },
   "devDependencies": {
     "@types/compare-versions": "^3.0.0",

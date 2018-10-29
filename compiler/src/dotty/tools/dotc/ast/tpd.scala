@@ -40,11 +40,15 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
   def Super(qual: Tree, mixName: TypeName, inConstrCall: Boolean, mixinClass: Symbol = NoSymbol)(implicit ctx: Context): Super =
     Super(qual, if (mixName.isEmpty) untpd.EmptyTypeIdent else untpd.Ident(mixName), inConstrCall, mixinClass)
 
-  def Apply(fn: Tree, args: List[Tree])(implicit ctx: Context): Apply =
+  def Apply(fn: Tree, args: List[Tree])(implicit ctx: Context): Apply = {
+    assert(fn.isInstanceOf[RefTree] || fn.isInstanceOf[GenericApply[_]])
     ta.assignType(untpd.Apply(fn, args), fn, args)
+  }
 
-  def TypeApply(fn: Tree, args: List[Tree])(implicit ctx: Context): TypeApply =
+  def TypeApply(fn: Tree, args: List[Tree])(implicit ctx: Context): TypeApply = {
+    assert(fn.isInstanceOf[RefTree] || fn.isInstanceOf[GenericApply[_]])
     ta.assignType(untpd.TypeApply(fn, args), fn, args)
+  }
 
   def Literal(const: Constant)(implicit ctx: Context): Literal =
     ta.assignType(untpd.Literal(const))
@@ -181,8 +185,10 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
   def Alternative(trees: List[Tree])(implicit ctx: Context): Alternative =
     ta.assignType(untpd.Alternative(trees), trees)
 
-  def UnApply(fun: Tree, implicits: List[Tree], patterns: List[Tree], proto: Type)(implicit ctx: Context): UnApply =
+  def UnApply(fun: Tree, implicits: List[Tree], patterns: List[Tree], proto: Type)(implicit ctx: Context): UnApply = {
+    assert(fun.isInstanceOf[RefTree] || fun.isInstanceOf[GenericApply[_]])
     ta.assignType(untpd.UnApply(fun, implicits, patterns), proto)
+  }
 
   def ValDef(sym: TermSymbol, rhs: LazyTree = EmptyTree)(implicit ctx: Context): ValDef =
     ta.assignType(untpd.ValDef(sym.name, TypeTree(sym.info), rhs), sym)
@@ -913,7 +919,17 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     def outerSelect(levels: Int, tp: Type)(implicit ctx: Context): Tree =
       untpd.Select(tree, OuterSelectName(EmptyTermName, levels)).withType(SkolemType(tp))
 
-    def underlyingArgument(implicit ctx: Context): Tree = mapToUnderlying.transform(tree)
+    /** Replace Inlined nodes and InlineProxy references to underlying arguments */
+    def underlyingArgument(implicit ctx: Context): Tree = {
+      val mapToUnderlying = new MapToUnderlying {
+        override def skipLocal(sym: Symbol): Boolean =
+          sym.is(InlineProxy) || sym.is(Synthetic)
+      }
+      mapToUnderlying.transform(tree)
+    }
+
+    /** Replace Ident nodes references to the underlying tree that defined them */
+    def underlying(implicit ctx: Context): Tree = new MapToUnderlying().transform(tree)
 
     // --- Higher order traversal methods -------------------------------
 
@@ -941,18 +957,22 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     }
   }
 
-  /** Map Inlined nodes, InlineProxy references and Synthetic val references to underlying arguments */
-  object mapToUnderlying extends TreeMap {
+  /** Map Inlined nodes, NamedArgs, Blocks with no statements and local references to underlying arguments.
+   *  Also drops Inline and Block with no statements.
+   */
+  class MapToUnderlying extends TreeMap {
     override def transform(tree: Tree)(implicit ctx: Context): Tree = tree match {
-      case tree: Ident if tree.symbol.is(InlineProxy) || (tree.symbol.is(Synthetic) && !tree.symbol.owner.isClass) =>
+      case tree: Ident if !tree.symbol.owner.isClass && skipLocal(tree.symbol) =>
         tree.symbol.defTree match {
           case defTree: ValOrDefDef => transform(defTree.rhs)
           case _ => tree
         }
       case Inlined(_, _, arg) => transform(arg)
+      case Block(Nil, arg) => transform(arg)
       case NamedArg(_, arg) => transform(arg)
       case tree => super.transform(tree)
     }
+    def skipLocal(sym: Symbol): Boolean = true
   }
 
   implicit class ListOfTreeDecorator(val xs: List[tpd.Tree]) extends AnyVal {

@@ -47,18 +47,22 @@ final class JLineTerminal(needsTerminal: Boolean) extends java.io.Closeable {
   )(implicit ctx: Context): String = {
     import LineReader.Option._
     import LineReader._
-    val lineReader = LineReaderBuilder.builder()
+    val userHome = System.getProperty("user.home")
+    val lineReader = LineReaderBuilder
+      .builder()
       .terminal(terminal)
       .history(history)
       .completer(completer)
       .highlighter(new Highlighter)
       .parser(new Parser)
+      .variable(HISTORY_FILE, s"$userHome/.dotty_history") // Save history to file
       .variable(SECONDARY_PROMPT_PATTERN, "%M") // A short word explaining what is "missing",
                                                 // this is supplied from the EOFError.getMissing() method
       .variable(LIST_MAX, 400)                  // Ask user when number of completions exceed this limit (default is 100).
       .variable(BLINK_MATCHING_PAREN, 0L)       // Don't blink the opening paren after typing a closing paren.
       .option(INSERT_TAB, true)                 // At the beginning of the line, insert tab instead of completing.
       .option(AUTO_FRESH_LINE, true)            // if not at start of line before prompt, move to new line.
+      .option(DISABLE_EVENT_EXPANSION, true)    // don't process escape sequences in input
       .build()
 
     lineReader.readLine(prompt)

@@ -1,10 +1,14 @@
 import * as vscode from 'vscode'
+import {
+  CancellationToken, CancellationTokenSource, CodeLens, CodeLensProvider, Command,
+  Event, EventEmitter, ProgressLocation, Range, TextDocument, TextEdit
+} from 'vscode'
 
 import {
-  asWorksheetRunParams, WorksheetRunRequest, WorksheetRunParams,
+  asWorksheetRunParams, WorksheetRunRequest, WorksheetRunResult,
   WorksheetPublishOutputParams, WorksheetPublishOutputNotification
 } from './protocol'
-import { BaseLanguageClient, DocumentSelector } from 'vscode-languageclient'
+import { BaseLanguageClient } from 'vscode-languageclient'
 import { Disposable } from 'vscode-jsonrpc'
 
 /**
@@ -13,14 +17,32 @@ import { Disposable } from 'vscode-jsonrpc'
  */
 export const worksheetRunKey = "dotty.worksheet.run"
 
-/** A worksheet managed by vscode */
-class Worksheet {
+/**
+ * The command key for cancelling a running worksheet. Exposed to users as
+ * `Cancel running worksheet`.
+ */
+export const worksheetCancelKey = "dotty.worksheet.cancel"
 
-  constructor(readonly document: vscode.TextDocument, readonly client: BaseLanguageClient) {
+/**
+ * A wrapper around the information that VSCode needs to display text decorations.
+ *
+ * @param decorationType    The styling options of this decoration
+ * @param decorationOptions The options of this decoraiton.
+ */
+class Decoration {
+  constructor(readonly decorationType: vscode.TextEditorDecorationType,
+              readonly decorationOptions: vscode.DecorationOptions) {
   }
+}
+
+/** A worksheet managed by vscode */
+class Worksheet implements Disposable {
+
+  /** The version of this document the last time it was run */
+  private runVersion: number = -1
 
   /** All decorations that have been added so far */
-  private decorationTypes: vscode.TextEditorDecorationType[] = []
+  private decorations: Decoration[] = []
 
   /** The number of blank lines that have been inserted to fit the output so far. */
   private insertedLines: number = 0
@@ -31,38 +53,108 @@ class Worksheet {
   /** The minimum margin to add so that the decoration is shown after all text. */
   private margin: number = 0
 
-  /** Remove all decorations and resets this worksheet. */
+  private readonly _onDidStateChange: EventEmitter<void> = new EventEmitter()
+  /** This event is fired when the worksheet starts or stops running. */
+  readonly onDidStateChange: Event<void> = this._onDidStateChange.event
+
+  /**
+   * If this is not null, this can be used to signal cancellation of the
+   * currently running worksheet.
+   */
+  private canceller?: CancellationTokenSource = undefined
+
+  constructor(readonly document: vscode.TextDocument, readonly client: BaseLanguageClient) {
+  }
+
+	dispose() {
+    this.reset()
+    if (this.canceller) {
+      this.canceller.dispose()
+      this.canceller = undefined
+    }
+    this._onDidStateChange.dispose()
+	}
+
+  /** Remove all decorations, and resets this worksheet. */
   private reset(): void {
-    this.decorationTypes.forEach(decoration => decoration.dispose())
+    this.decorations.forEach(decoration => decoration.decorationType.dispose())
+    this.decorations = []
     this.insertedLines = 0
     this.decoratedLines.clear()
+    this.runVersion = -1
     this.margin = this.longestLine() + 5
   }
 
   /**
    * Reset the "worksheet state" (margin and number of inserted lines), and
-   * removes redundant blank lines that have been inserted by a previous
-   * run.
+   * return an array of TextEdit that remove the redundant blank lines that have
+   * been inserted by a previous run.
    */
-  prepareForRunning(): void {
-    this.removeRedundantBlankLines().then(_ => this.reset())
+  prepareRun(): TextEdit[] {
+    const edits = this.removeRedundantBlankLinesEdits()
+    this.reset()
+    return edits
+  }
+
+  /** If this worksheet is currently being run, cancel the run. */
+  cancel(): void {
+    if (this.canceller) {
+      this.canceller.cancel()
+      this.canceller = undefined
+
+      this._onDidStateChange.fire()
+    }
+  }
+
+  /** Is this worksheet currently being run ? */
+  isRunning(): boolean {
+    return this.canceller != undefined
   }
 
   /**
-   * Run the worksheet in `document`, display a progress bar during the run.
+   * Run the worksheet in `document`, if a previous run is in progress, it is
+   * cancelled first.
    */
-  run(): Thenable<{}> {
-    return vscode.window.withProgress({
-      location: vscode.ProgressLocation.Notification,
-      title: "Run the worksheet",
-      cancellable: true
-    }, (_, token) => {
-      return this.client.sendRequest(WorksheetRunRequest.type, asWorksheetRunParams(this.document), token)
+  run(): Promise<WorksheetRunResult> {
+    this.cancel()
+    const canceller = new CancellationTokenSource()
+    const token = canceller.token
+    // This ensures that isRunning() returns true.
+    this.canceller = canceller
+
+    this._onDidStateChange.fire()
+
+    return new Promise<WorksheetRunResult>(resolve => {
+      const textEdits = this.prepareRun()
+      const edit = new vscode.WorkspaceEdit()
+      edit.set(this.document.uri, textEdits)
+      vscode.workspace.applyEdit(edit).then(editSucceeded => {
+        this.runVersion = this.document.version
+        if (editSucceeded && !token.isCancellationRequested)
+          resolve(vscode.window.withProgress({
+            location: ProgressLocation.Window,
+            title: "Running worksheet"
+          }, () => this.client.sendRequest(
+            WorksheetRunRequest.type, asWorksheetRunParams(this.document), token
+          )))
+        else
+          resolve({ success: false })
+      })
+    }).then(result => {
+      canceller.dispose()
+      if (this.canceller === canceller) { // If false, a new run has already started
+        // This ensures that isRunning() returns false.
+        this.canceller = undefined
+
+        this._onDidStateChange.fire()
+      }
+      return result
     })
   }
 
   /**
-   * Parse and display the result of running part of this worksheet.
+   * Parse and display the result of running part of this worksheet. The result is saved so that it
+   * can be restored if this buffer is closed.
    *
    * @param lineNumber The number of the line in the source that produced the result.
    * @param runResult  The result itself.
@@ -71,7 +163,7 @@ class Worksheet {
    * @return A `Thenable` that will insert necessary lines to fit the output
    *         and display the decorations upon completion.
    */
-  public displayResult(lineNumber: number, runResult: string, editor: vscode.TextEditor) {
+  public displayAndSaveResult(lineNumber: number, runResult: string, editor: vscode.TextEditor) {
     const resultLines = runResult.trim().split(/\r\n|\r|\n/g)
 
     // The line where the next decoration should be put.
@@ -87,6 +179,8 @@ class Worksheet {
       const editPos = new vscode.Position(actualLine + 1, 0) // add after the line
       addNewLinesEdit.insert(editor.document.uri, editPos, "\n".repeat(linesToInsert))
       this.insertedLines += linesToInsert
+      // Increase the `runVersion`, because the text edit will increase the document's version
+      this.runVersion += 1
     }
 
     return vscode.workspace.applyEdit(addNewLinesEdit).then(_ => {
@@ -94,14 +188,30 @@ class Worksheet {
         const decorationPosition = new vscode.Position(actualLine, 0)
         const decorationMargin = this.margin - editor.document.lineAt(actualLine).text.length
         const decorationType = this.createDecoration(decorationMargin, line)
-        this.decorationTypes.push(decorationType)
-        this.decoratedLines.add(actualLine)
+        const decorationOptions = { range: new vscode.Range(decorationPosition, decorationPosition), hoverMessage: line }
+        const decoration = new Decoration(decorationType, decorationOptions)
 
-        const decoration = { range: new vscode.Range(decorationPosition, decorationPosition), hoverMessage: line }
-        editor.setDecorations(decorationType, [decoration])
+        this.decoratedLines.add(actualLine)
+        this.decorations.push(decoration)
+
+        editor.setDecorations(decorationType, [decorationOptions])
         actualLine += 1
       }
     })
+  }
+
+  /**
+   * Restore the decorations that belong to this worksheet in `editor`. If the document has been
+   * changed, since the last run of the worksheet, the decorations won't be added.
+   *
+   * @param editor The editor where to display the decorations.
+   */
+  public restoreDecorations(editor: vscode.TextEditor) {
+    if (editor.document.version == this.runVersion) {
+      this.decorations.forEach(decoration => {
+        editor.setDecorations(decoration.decorationType, [decoration.decorationOptions])
+      })
+    }
   }
 
   /**
@@ -120,7 +230,10 @@ class Worksheet {
         contentText: text,
         margin: `0px 0px 0px ${margin}ch`,
         fontStyle: "italic",
-        color: "light gray",
+        // It would make more sense to use the colors of commments in the
+        // current theme, but there's no API to access this currently
+        // (https://github.com/Microsoft/vscode/issues/32813).
+        color: new vscode.ThemeColor("terminal.ansiGreen"),
       }
     })
   }
@@ -143,16 +256,16 @@ class Worksheet {
   }
 
   /**
-   * Remove the repeated blank lines in the source.
+   * TextEdits to remove the repeated blank lines in the source.
    *
    * Running a worksheet can insert new lines in the worksheet so that the
    * output of a line fits below the line. Before a run, we remove blank
    * lines in the worksheet to keep its length under control.
    *
    * @param worksheet The worksheet where blank lines must be removed.
-   * @return A `Thenable` removing the blank lines upon completion.
+   * @return An array of `TextEdit` that remove the blank lines.
    */
-  private removeRedundantBlankLines() {
+  private removeRedundantBlankLinesEdits(): TextEdit[] {
 
     const document = this.document
     const lineCount = document.lineCount
@@ -188,13 +301,7 @@ class Worksheet {
       addRange()
     }
 
-    return rangesToRemove.reverse().reduce((chain: Thenable<boolean>, range) => {
-      return chain.then(_ => {
-        const edit = new vscode.WorkspaceEdit()
-        edit.delete(document.uri, range)
-        return vscode.workspace.applyEdit(edit)
-      })
-    }, Promise.resolve(true))
+    return rangesToRemove.reverse().map(range => vscode.TextEdit.delete(range))
   }
 
   private hasDecoration(line: number): boolean {
@@ -203,33 +310,53 @@ class Worksheet {
 }
 
 export class WorksheetProvider implements Disposable {
-  private disposables: Disposable[] = []
   private worksheets: Map<vscode.TextDocument, Worksheet> = new Map()
+  private readonly _onDidWorksheetStateChange: EventEmitter<Worksheet> = new EventEmitter()
+  /** This event is fired when a worksheet starts or stops running. */
+  readonly onDidWorksheetStateChange: Event<Worksheet> = this._onDidWorksheetStateChange.event
+
+  private disposables: Disposable[] = [ this._onDidWorksheetStateChange ]
 
   constructor(
       readonly client: BaseLanguageClient,
-      readonly documentSelectors: vscode.DocumentSelector[]) {
+      readonly documentSelector: vscode.DocumentSelector) {
+    const codeLensProvider = new WorksheetCodeLensProvider(this)
     this.disposables.push(
+      codeLensProvider,
+      vscode.languages.registerCodeLensProvider(documentSelector, codeLensProvider),
       vscode.workspace.onWillSaveTextDocument(event => {
         const worksheet = this.worksheetFor(event.document)
         if (worksheet) {
-          // Block file saving until the worksheet is ready to be run.
-          worksheet.prepareForRunning()
+          event.waitUntil(Promise.resolve(worksheet.prepareRun()))
         }
       }),
       vscode.workspace.onDidSaveTextDocument(document => {
+        const runWorksheetOnSave = vscode.workspace.getConfiguration("dotty").get("runWorksheetOnSave")
         const worksheet = this.worksheetFor(document)
-        if (worksheet) {
-          return worksheet.run()
+        if (runWorksheetOnSave && worksheet) {
+          worksheet.run()
         }
       }),
       vscode.workspace.onDidCloseTextDocument(document => {
-        if (this.isWorksheet(document)) {
+        const worksheet = this.worksheetFor(document)
+        if (worksheet) {
+          worksheet.dispose()
           this.worksheets.delete(document)
         }
       }),
+      vscode.window.onDidChangeActiveTextEditor(editor => {
+        if (editor) {
+          const worksheet = this.worksheetFor(editor.document)
+          if (worksheet) {
+            worksheet.restoreDecorations(editor)
+          }
+        }
+      }),
       vscode.commands.registerCommand(worksheetRunKey, () => {
-        this.runWorksheetCommand()
+        this.callOnActiveWorksheet(w => w.run())
+      }),
+      vscode.commands.registerCommand(worksheetCancelKey, () => {
+        this.callOnActiveWorksheet(w => w.cancel())
       })
     )
     client.onNotification(WorksheetPublishOutputNotification.type, params => {
@@ -238,17 +365,19 @@ export class WorksheetProvider implements Disposable {
   }
 
 	dispose() {
-		this.disposables.forEach(d => d.dispose());
-		this.disposables = [];
+    this.worksheets.forEach(d => d.dispose())
+    this.worksheets.clear()
+		this.disposables.forEach(d => d.dispose())
+		this.disposables = []
 	}
 
   /** Is this document a worksheet? */
   private isWorksheet(document: vscode.TextDocument): boolean {
-    return this.documentSelectors.some(sel => vscode.languages.match(sel, document) > 0)
+    return vscode.languages.match(this.documentSelector, document) > 0
   }
 
   /** If `document` is a worksheet, create a new worksheet for it, or return the existing one. */
-  private worksheetFor(document: vscode.TextDocument): Worksheet | undefined {
+  worksheetFor(document: vscode.TextDocument): Worksheet | undefined {
     if (!this.isWorksheet(document)) return
     else {
       const existing = this.worksheets.get(document)
@@ -257,35 +386,21 @@ export class WorksheetProvider implements Disposable {
       } else {
         const newWorksheet = new Worksheet(document, this.client)
         this.worksheets.set(document, newWorksheet)
+        this.disposables.push(
+          newWorksheet.onDidStateChange(() => this._onDidWorksheetStateChange.fire(newWorksheet))
+        )
         return newWorksheet
       }
     }
   }
 
-  /**
-   * The VSCode command executed when the user select `Run worksheet`.
-   *
-   * We check whether the buffer is dirty, and if it is, we save it. Running the worksheet will then be
-   * triggered by file save.
-   * If the buffer is clean, we do the necessary preparation for worksheet (compute margin,
-   * remove blank lines, etc.) and check if the buffer has been changed by that. If it is, we save
-   * and the run will be triggered by file save.
-   * If the buffer is still clean, call `Worksheet#run`.
-   */
-  private runWorksheetCommand() {
-    const editor = vscode.window.activeTextEditor
-    if (editor) {
-      const document = editor.document
+  /** If the active text editor contains a worksheet, apply `f` to it. */
+  private callOnActiveWorksheet(f: (_: Worksheet) => void) {
+    let document = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document
+    if (document) {
       const worksheet = this.worksheetFor(document)
       if (worksheet) {
-        if (document.isDirty) document.save() // This will trigger running the worksheet
-        else {
-          worksheet.prepareForRunning()
-          if (document.isDirty) document.save() // This will trigger running the worksheet
-          else {
-            worksheet.run()
-          }
-        }
+        f(worksheet)
       }
     }
   }
@@ -305,8 +420,44 @@ export class WorksheetProvider implements Disposable {
     if (editor) {
       const worksheet = this.worksheetFor(editor.document)
       if (worksheet) {
-        worksheet.displayResult(output.line - 1, output.content, editor)
+        worksheet.displayAndSaveResult(output.line - 1, output.content, editor)
       }
+    }
+  }
+}
+
+class WorksheetCodeLensProvider implements CodeLensProvider, Disposable {
+  private readonly _onDidChangeCodeLenses: EventEmitter<void> = new EventEmitter()
+  readonly onDidChangeCodeLenses: Event<void> = this._onDidChangeCodeLenses.event
+
+  private disposables: Disposable[] = [ this._onDidChangeCodeLenses ]
+
+  constructor(readonly worksheetProvider: WorksheetProvider) {
+    this.disposables.push(
+      worksheetProvider.onDidWorksheetStateChange(() => this._onDidChangeCodeLenses.fire())
+    )
+  }
+
+  dispose() {
+    this.disposables.forEach(d => d.dispose())
+    this.disposables = []
+  }
+
+  private readonly runCommand: Command = {
+    command: worksheetRunKey,
+    title: "Run this worksheet"
+  }
+
+  private readonly cancelCommand: Command = {
+    command: worksheetCancelKey,
+    title: "Worksheet running, click to cancel"
+  }
+
+  provideCodeLenses(document: TextDocument, token: CancellationToken) {
+    const worksheet = this.worksheetProvider.worksheetFor(document)
+    if (worksheet) {
+      const cmd = worksheet.isRunning() ? this.cancelCommand : this.runCommand
+      return [ new CodeLens(new Range(0, 0, 0, 0), cmd) ]
     }
   }
 }
