@@ -1,17 +1,15 @@
-'use strict';
+import * as fs from 'fs'
+import * as path from 'path'
 
-import * as fs from 'fs';
-import * as path from 'path';
+import * as pcp from 'promisify-child-process'
+import * as compareVersions from 'compare-versions'
 
-import * as pcp from 'promisify-child-process';
-import * as compareVersions from 'compare-versions';
+import { ChildProcess } from "child_process"
 
-import { ChildProcess } from "child_process";
-
-import { ExtensionContext } from 'vscode';
-import * as vscode from 'vscode';
+import { ExtensionContext } from 'vscode'
+import * as vscode from 'vscode'
 import { LanguageClient, LanguageClientOptions, RevealOutputChannelOn,
-         ServerOptions } from 'vscode-languageclient';
+         ServerOptions } from 'vscode-languageclient'
 import { enableOldServerWorkaround } from './compat'
 import * as features from './features'
 
@@ -19,9 +17,14 @@ export let client: LanguageClient
 
 import * as rpc from 'vscode-jsonrpc'
 import * as sbtserver from './sbt-server'
+import { Tracer } from './tracer'
+
+export const extensionName = 'dotty'
+const extensionConfig = vscode.workspace.getConfiguration(extensionName)
 
 let extensionContext: ExtensionContext
 let outputChannel: vscode.OutputChannel
+let tracer: Tracer
 
 /** The sbt process that may have been started by this extension */
 let sbtProcess: ChildProcess | undefined
@@ -45,9 +48,14 @@ function isConfiguredProject() {
 
 export function activate(context: ExtensionContext) {
   extensionContext = context
-  outputChannel = vscode.window.createOutputChannel("Dotty");
+  outputChannel = vscode.window.createOutputChannel("Dotty")
+  tracer = new Tracer({
+    extensionContext,
+    extensionConfig,
+    extensionOut: outputChannel,
+  })
 
-  const coursierPath = path.join(extensionContext.extensionPath, "out", "coursier");
+  const coursierPath = path.join(extensionContext.extensionPath, "out", "coursier")
   const dottyPluginSbtFileSource = path.join(extensionContext.extensionPath, "out", "dotty-plugin.sbt")
   const buildSbtFileSource = path.join(extensionContext.extensionPath, "out", "build.sbt")
 
@@ -68,8 +76,9 @@ export function activate(context: ExtensionContext) {
   } else if (!fs.existsSync(disableDottyIDEFile)) {
 
     if (!vscode.workspace.workspaceFolders) {
-      if (vscode.window.activeTextEditor) {
-        setWorkspaceAndReload(vscode.window.activeTextEditor.document)
+      const editor = vscode.window.activeTextEditor
+      if (editor && editor.document.uri.fsPath && editor.document.uri.fsPath.length > 0) {
+        setWorkspaceAndReload(editor.document)
       }
     } else {
       let configuredProject: Thenable<void> = Promise.resolve()
@@ -108,7 +117,16 @@ export function activate(context: ExtensionContext) {
 function setWorkspaceAndReload(document: vscode.TextDocument) {
   const documentPath = path.parse(document.uri.fsPath).dir
   const workspaceRoot = findWorkspaceRoot(documentPath) || documentPath
-  vscode.workspace.updateWorkspaceFolders(0, null, { uri: vscode.Uri.file(workspaceRoot) })
+
+  vscode.window.showInformationMessage(
+    `It looks like '${workspaceRoot}' is the root of your Scala workspace. ` +
+    'Would you like to open it?',
+    'Yes', 'No'
+  ).then((value: String | undefined) => {
+    if (value === 'Yes') {
+      vscode.workspace.updateWorkspaceFolders(0, null, { uri: vscode.Uri.file(workspaceRoot) })
+    }
+  })
 }
 
 /**
@@ -297,6 +315,8 @@ function bootstrapSbtProject(buildSbtFileSource: string,
 }
 
 function run(serverOptions: ServerOptions, isOldServer: boolean) {
+  const lspOutputChannel = tracer.run()
+
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
       { scheme: 'file', pattern: '**/*.sc' },
@@ -307,11 +327,11 @@ function run(serverOptions: ServerOptions, isOldServer: boolean) {
     synchronize: {
       configurationSection: 'dotty'
     },
-    outputChannel: outputChannel,
+    outputChannel: lspOutputChannel,
     revealOutputChannelOn: RevealOutputChannelOn.Never
   }
 
-  client = new LanguageClient("dotty", "Dotty", serverOptions, clientOptions)
+  client = new LanguageClient(extensionName, "Dotty", serverOptions, clientOptions)
   client.registerFeature(new features.WorksheetRunFeature(client))
 
   if (isOldServer)
