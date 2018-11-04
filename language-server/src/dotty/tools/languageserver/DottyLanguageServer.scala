@@ -353,7 +353,7 @@ class DottyLanguageServer extends LanguageServer
     val tp = Interactive.enclosingType(trees, pos)
     val tpw = tp.widenTermRefExpr
 
-    if (tpw == NoType) null // null here indicates that no response should be sent
+    if (tp.isError || tpw == NoType) null // null here indicates that no response should be sent
     else {
       val symbol = Interactive.enclosingSourceSymbol(trees, pos)
       val docComment = ctx.docCtx.flatMap(_.docstring(symbol))
@@ -620,6 +620,8 @@ object DottyLanguageServer {
         SK.Package
       else if (sym.isConstructor)
         SK.Constructor
+      else if (sym.is(Module))
+        SK.Module
       else if (sym.isClass)
         SK.Class
       else if (sym.is(Mutable))
@@ -630,7 +632,7 @@ object DottyLanguageServer {
         SK.Field
     }
 
-    val name = sym.name.show
+    val name = sym.name.stripModuleClassSuffix.show
     val containerName =
       if (sym.owner.exists && !sym.owner.isEmptyPackage)
         sym.owner.name.show

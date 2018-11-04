@@ -59,8 +59,19 @@ object Applications {
     extractorMemberType(tp, nme.get, errorPos).exists
 
   def productSelectorTypes(tp: Type, errorPos: Position = NoPosition)(implicit ctx: Context): List[Type] = {
-    val sels = for (n <- Iterator.from(0)) yield extractorMemberType(tp, nme.selectorName(n), errorPos)
-    sels.takeWhile(_.exists).toList
+    def tupleSelectors(n: Int, tp: Type): List[Type] = {
+      val sel = extractorMemberType(tp, nme.selectorName(n), errorPos)
+      // extractorMemberType will return NoType if this is the tail of tuple with an unknown tail 
+      // such as `Int *: T` where `T <: Tuple`.
+      if (sel.exists) sel :: tupleSelectors(n + 1, tp) else Nil
+    }
+    def genTupleSelectors(n: Int, tp: Type): List[Type] = tp match {
+      case tp: AppliedType if !tp.derivesFrom(defn.ProductClass) && tp.derivesFrom(defn.PairClass) =>
+        val List(head, tail) = tp.args
+        head :: genTupleSelectors(n, tail)
+      case _ => tupleSelectors(n, tp)
+    }
+    genTupleSelectors(0, tp)
   }
 
   def productArity(tp: Type)(implicit ctx: Context): Int =
@@ -479,7 +490,10 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
           }
 
           def tryDefault(n: Int, args1: List[Arg]): Unit = {
-            val getter = findDefaultGetter(n + numArgs(normalizedFun))
+            val getter =
+              // `methRef.symbol` doesn't exist for structural calls
+              if (methRef.symbol.exists) findDefaultGetter(n + numArgs(normalizedFun))
+              else EmptyTree
             if (getter.isEmpty) missingArg(n)
             else {
               val substParam = addTyped(

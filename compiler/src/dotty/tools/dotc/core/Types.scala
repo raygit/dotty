@@ -1917,6 +1917,10 @@ object Types {
         ||
         lastSymbol.infoOrCompleter.isInstanceOf[ErrorType]
         ||
+        !sym.exists
+        ||
+        !lastSymbol.exists
+        ||
         sym.isPackageObject // package objects can be visited before we get around to index them
         ||
         sym.owner != lastSymbol.owner &&
@@ -1988,7 +1992,8 @@ object Types {
     }
 
     /** The argument corresponding to class type parameter `tparam` as seen from
-     *  prefix `pre`.
+     *  prefix `pre`. Can produce a TypeBounds type in case prefix is an & or | type
+     *  and parameter is non-variant.
      */
     def argForParam(pre: Type)(implicit ctx: Context): Type = {
       val tparam = symbol
@@ -2010,8 +2015,16 @@ object Types {
             idx += 1
           }
           NoType
-        case OrType(base1, base2) => argForParam(base1) | argForParam(base2)
-        case AndType(base1, base2) => argForParam(base1) & argForParam(base2)
+        case base: AndOrType =>
+          var tp1 = argForParam(base.tp1)
+          var tp2 = argForParam(base.tp2)
+          val variance = tparam.paramVariance
+          if (tp1.isInstanceOf[TypeBounds] || tp2.isInstanceOf[TypeBounds] || variance == 0) {
+            // compute argument as a type bounds instead of a point type
+            tp1 = tp1.bounds
+            tp2 = tp2.bounds
+          }
+          if (base.isAnd == variance >= 0) tp1 & tp2 else tp1 | tp2
         case _ =>
           if (pre.termSymbol is Package) argForParam(pre.select(nme.PACKAGE))
           else if (pre.isBottomType) pre
@@ -2070,17 +2083,36 @@ object Types {
       else this
 
     /** A reference like this one, but with the given denotation, if it exists.
-     *  If the symbol of `denot` is the same as the current symbol, the denotation
-     *  is re-used, otherwise a new one is created.
+     *  Returns a new named type with the denotation's symbol if that symbol exists, and
+     *  one of the following alternatives applies:
+     *   1. The current designator is a symbol and the symbols differ, or
+     *   2. The current designator is a name and the new symbolic named type
+     *      does not have a currently known denotation.
+     *   3. The current designator is a name and the new symbolic named type
+     *      has the same info as the current info
+     *  Otherwise the current denotation is overwritten with the given one.
+     *
+     *  Note: (2) and (3) are a "lock in mechanism" where a reference with a name as
+     *  designator can turn into a symbolic reference.
+     *
+     *  Note: This is a subtle dance to keep the balance between going to symbolic
+     *  references as much as we can (since otherwise we'd risk getting cycles)
+     *  and to still not lose any type info in the denotation (since symbolic
+     *  references often recompute their info directly from the symbol's info).
+     *  A test case is neg/opaque-self-encoding.scala.
      */
     final def withDenot(denot: Denotation)(implicit ctx: Context): ThisType =
       if (denot.exists) {
         val adapted = withSym(denot.symbol)
-        if (adapted ne this) adapted.withDenot(denot).asInstanceOf[ThisType]
-        else {
-          setDenot(denot)
-          this
-        }
+        val result =
+          if (adapted.eq(this)
+              || designator.isInstanceOf[Symbol]
+              || !adapted.denotationIsCurrent
+              || adapted.info.eq(denot.info))
+            adapted
+          else this
+        result.setDenot(denot)
+        result.asInstanceOf[ThisType]
       }
       else // don't assign NoDenotation, we might need to recover later. Test case is pos/avoid.scala.
         this
@@ -2181,6 +2213,11 @@ object Types {
     override protected def designator_=(d: Designator): Unit = myDesignator = d
 
     override def underlying(implicit ctx: Context): Type = info
+
+    /** Hook that can be called from creation methods in TermRef and TypeRef */
+    def validated(implicit ctx: Context): this.type = {
+      this
+    }
   }
 
   final class CachedTermRef(prefix: Type, designator: Designator, hc: Int) extends TermRef(prefix, designator) {
@@ -2196,6 +2233,23 @@ object Types {
   /** Assert current phase does not have erasure semantics */
   private def assertUnerased()(implicit ctx: Context) =
     if (Config.checkUnerased) assert(!ctx.phase.erasedTypes)
+
+  /** The designator to be used for a named type creation with given prefix, name, and denotation.
+   *  This is the denotation's symbol, if it exists and the prefix is not the this type
+   *  of the class owning the symbol. The reason for the latter qualification is that
+   *  when re-computing the denotation of a `this.<symbol>` reference we read the
+   *  type directly off the symbol. But the given denotation might contain a more precise
+   *  type than what can be computed from the symbol's info. We have to create in this case
+   *  a reference with a name as designator so that the denotation will be correctly updated in
+   *  the future. See also NamedType#withDenot. Test case is neg/opaque-self-encoding.scala.
+   */
+  private def designatorFor(prefix: Type, name: Name, denot: Denotation)(implicit ctx: Context): Designator = {
+    val sym = denot.symbol
+    if (sym.exists && (prefix.eq(NoPrefix) || prefix.ne(sym.owner.thisType)))
+      sym
+    else
+      name
+  }
 
   object NamedType {
     def isType(desig: Designator)(implicit ctx: Context): Boolean = desig match {
@@ -2220,7 +2274,7 @@ object Types {
      *  from the denotation's symbol if the latter exists, or else it is the given name.
      */
     def apply(prefix: Type, name: TermName, denot: Denotation)(implicit ctx: Context): TermRef =
-      apply(prefix, if (denot.symbol.exists) denot.symbol.asTerm else name).withDenot(denot)
+      apply(prefix, designatorFor(prefix, name, denot)).withDenot(denot)
   }
 
   object TypeRef {
@@ -2233,7 +2287,7 @@ object Types {
      *  from the denotation's symbol if the latter exists, or else it is the given name.
      */
     def apply(prefix: Type, name: TypeName, denot: Denotation)(implicit ctx: Context): TypeRef =
-      apply(prefix, if (denot.symbol.exists) denot.symbol.asType else name).withDenot(denot)
+      apply(prefix, designatorFor(prefix, name, denot)).withDenot(denot)
   }
 
   // --- Other SingletonTypes: ThisType/SuperType/ConstantType ---------------------------
@@ -4414,6 +4468,7 @@ object Types {
     protected def range(lo: Type, hi: Type): Type =
       if (variance > 0) hi
       else if (variance < 0) lo
+      else if (lo `eq` hi) lo
       else Range(lower(lo), upper(hi))
 
     protected def isRange(tp: Type): Boolean = tp.isInstanceOf[Range]
@@ -4462,13 +4517,18 @@ object Types {
      *  If the expansion is a wildcard parameter reference, convert its
      *  underlying bounds to a range, otherwise return the expansion.
      */
-    def expandParam(tp: NamedType, pre: Type): Type = tp.argForParam(pre) match {
-      case arg @ TypeRef(pre, _) if pre.isArgPrefixOf(arg.symbol) =>
-        arg.info match {
-          case TypeBounds(lo, hi) => range(atVariance(-variance)(reapply(lo)), reapply(hi))
-          case arg => reapply(arg)
-        }
-      case arg => reapply(arg)
+    def expandParam(tp: NamedType, pre: Type): Type = {
+      def expandBounds(tp: TypeBounds) =
+        range(atVariance(-variance)(reapply(tp.lo)), reapply(tp.hi))
+      tp.argForParam(pre) match {
+        case arg @ TypeRef(pre, _) if pre.isArgPrefixOf(arg.symbol) =>
+          arg.info match {
+            case argInfo: TypeBounds => expandBounds(argInfo)
+            case argInfo => reapply(arg)
+          }
+        case arg: TypeBounds => expandBounds(arg)
+        case arg => reapply(arg)
+      }
     }
 
     /** Derived selection.
@@ -4482,9 +4542,12 @@ object Types {
             if (tp.symbol.is(ClassTypeParam)) expandParam(tp, preHi)
             else tryWiden(tp, preHi)
           forwarded.orElse(
-            range(super.derivedSelect(tp, preLo), super.derivedSelect(tp, preHi)))
+            range(super.derivedSelect(tp, preLo).loBound, super.derivedSelect(tp, preHi).hiBound))
         case _ =>
-          super.derivedSelect(tp, pre)
+          super.derivedSelect(tp, pre) match {
+            case TypeBounds(lo, hi) => range(lo, hi)
+            case tp => tp
+          }
       }
 
     override protected def derivedRefinedType(tp: RefinedType, parent: Type, info: Type): Type =
