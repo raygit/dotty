@@ -935,6 +935,18 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       assertEquals("class MyValue", valueClass.show)
     }
 
+  @Test def valueClassParameterMayNotBeCallByName =
+    checkMessagesAfter(RefChecks.name) {
+      """class MyValue(a: => Int) extends AnyVal"""
+    }
+    .expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+      assertMessageCount(1, messages)
+      val ValueClassParameterMayNotBeCallByName(valueClass, param) :: Nil = messages
+      assertEquals("class MyValue", valueClass.show)
+      assertEquals("value a", param.show)
+    }
+
   @Test def onlyCaseClassOrCaseObjectAllowed =
     checkMessagesAfter(FrontEnd.name) {
       """case Foobar"""
@@ -1499,4 +1511,98 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       assertEquals(tailRegMessages, Set("variable", "value", "object", "class"))
     }
 
+  @Test def notAnExtractor() =
+    checkMessagesAfter(FrontEnd.name) {
+      """
+        | class Foo
+        | object Test {
+        |   def test(foo: Foo) = foo match {
+        |       case Foo(name) => ???
+        |   }
+        | }
+      """.stripMargin
+    }.expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+      assertMessageCount(1, messages)
+      val NotAnExtractor(tree) = messages.head
+      assertEquals("Foo", tree.show)
+    }
+
+  @Test def memberWithSameNameAsStatic() =
+    checkMessagesAfter(CheckStatic.name) {
+      """
+        |import scala.annotation.static
+        |class Camp {
+        |  val name = ""
+        |}
+        |object Camp {
+        |  @static val name = ""
+        |}
+      """.stripMargin
+    }.expect { (_, messages) =>
+      assertMessageCount(1, messages)
+      val message = messages.head
+      assertTrue(message.isInstanceOf[MemberWithSameNameAsStatic])
+      assertEquals(message.msg, "Companion classes cannot define members with same name as a @static member")
+    }
+
+  @Test def companionOfTraitWithMutableStatic() =
+    checkMessagesAfter(CheckStatic.name) {
+      """
+        | import scala.annotation.static
+        | trait Test
+        | object Test {
+        |   @static var myStatic = ""
+        | }
+      """.stripMargin
+    }.expect { (_, messages) =>
+      assertMessageCount(1, messages)
+      val message = messages.head
+      assertTrue(message.isInstanceOf[TraitCompanionWithMutableStatic])
+      assertEquals(
+        "Companion of traits cannot define mutable @static fields",
+        message.msg
+      )
+    }
+
+  @Test def lazyStaticField() =
+    checkMessagesAfter(CheckStatic.name) {
+      """
+        | import scala.annotation.static
+        | class Test
+        | object Test {
+        |   @static lazy val myStatic = ""
+        | }
+      """.stripMargin
+    }.expect { (_, messages) =>
+      assertMessageCount(1, messages)
+      val message = messages.head
+      assertTrue(message.isInstanceOf[LazyStaticField])
+      assertEquals(
+        "Lazy @static fields are not supported",
+        message.msg
+      )
+    }
+
+  @Test def staticOverridingNonStatic() =
+    checkMessagesAfter(CheckStatic.name) {
+      """
+        | import scala.annotation.static
+        | trait Foo {
+        |   val foo = ""
+        | }
+        | class Test
+        | object Test extends Foo {
+        |   @static val foo = ""
+        | }
+      """.stripMargin
+    }.expect { (_, messages) =>
+      assertMessageCount(1, messages)
+      val message = messages.head
+      assertTrue(message.isInstanceOf[StaticOverridingNonStaticMembers])
+      assertEquals(
+        "@static members cannot override or implement non-static ones",
+        message.msg
+      )
+    }
 }

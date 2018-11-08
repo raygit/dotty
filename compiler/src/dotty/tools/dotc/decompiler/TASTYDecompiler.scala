@@ -15,6 +15,7 @@ class TASTYDecompiler extends TASTYCompiler {
     Nil
 
   override protected def picklerPhases: List[List[Phase]] = Nil
+
   override protected def transformPhases: List[List[Phase]] = Nil
 
   override protected def backendPhases: List[List[Phase]] =

@@ -55,12 +55,13 @@ Standard-Section: "ASTs" TopLevelStat*
                   Stat
 
   Stat          = Term
-                  VALDEF         Length NameRef type_Term rhs_Term? Modifier*
-                  DEFDEF         Length NameRef TypeParam* Params* returnType_Term rhs_Term?
-                                        Modifier*
+                  ValOrDefDef
                   TYPEDEF        Length NameRef (type_Term | Template) Modifier*
                   OBJECTDEF      Length NameRef Template Modifier*
                   IMPORT         Length qual_Term Selector*
+  ValOrDefDef   = VALDEF         Length NameRef type_Term rhs_Term? Modifier*
+                  DEFDEF         Length NameRef TypeParam* Params* returnType_Term rhs_Term?
+                                        Modifier*
   Selector      = IMPORTED              name_NameRef
                   RENAMED               to_NameRef
 
@@ -85,7 +86,6 @@ Standard-Section: "ASTs" TopLevelStat*
                   TYPED          Length expr_Term ascriptionType_Tern
                   ASSIGN         Length lhs_Term rhs_Term
                   BLOCK          Length expr_Term Stat*
-                  INLINED        Length call_Term expr_Term Stat*
                   LAMBDA         Length meth_Term target_Type?
                   IF             Length cond_Term then_Term else_Term
                   MATCH          Length sel_Term CaseDef*
@@ -109,10 +109,8 @@ Standard-Section: "ASTs" TopLevelStat*
                   ORtpt          Length left_Term right_Term
                   MATCHtpt       Length bound_Term? sel_Term CaseDef*
                   BYNAMEtpt             underlying_Term
-                  EMPTYTREE
                   SHAREDterm            term_ASTRef
                   HOLE           Length idx_Nat arg_Tree*
-                  UNTYPEDSPLICE  Length splice_TermUntyped splice_Type
 
   CaseDef       = CASEDEF        Length pat_Term rhs_Tree guard_Tree?
   ImplicitArg   = IMPLICITARG           arg_Term
@@ -207,16 +205,6 @@ Standard-Section: "ASTs" TopLevelStat*
 
   Annotation    = ANNOTATION     Length tycon_Type fullAnnotation_Term
 
-// --------------- untyped additions ------------------------------------------
-
-  TermUntyped   = Term
-                  TYPEDSPLICE Length splice_Term
-                  FUNCTION    Length body_Term arg_Term*
-                  INFIXOP     Length op_NameRef left_Term right_Term
-                  TUPLE       Length elem_Term*
-                  PATDEF      Length type_Term rhs_Term pattern_Term* Modifier*
-                  EMPTYTYPETREE
-
 Note: Tree tags are grouped into 5 categories that determine what follows, and thus allow to compute the size of the tagged tree in a generic way.
 
   Category 1 (tags 1-49)   :  tag
@@ -245,9 +233,9 @@ Standard Section: "Comments" Comment*
 
 object TastyFormat {
 
-  final val header = Array(0x5C, 0xA1, 0xAB, 0x1F)
-  val MajorVersion = 11
-  val MinorVersion = 0
+  final val header: Array[Int] = Array(0x5C, 0xA1, 0xAB, 0x1F)
+  val MajorVersion: Int = 12
+  val MinorVersion: Int = 0
 
   /** Tags used to serialize names */
   class NameTags {
@@ -299,29 +287,26 @@ object TastyFormat {
   final val IMPLICIT = 13
   final val LAZY = 14
   final val OVERRIDE = 15
-
-  final val INLINE = 17
-  final val STATIC = 18
-  final val OBJECT = 19
-  final val TRAIT = 20
-  final val ENUM = 21
-  final val LOCAL = 22
-  final val SYNTHETIC = 23
-  final val ARTIFACT = 24
-  final val MUTABLE = 25
-  final val LABEL = 26
-  final val FIELDaccessor = 27
-  final val CASEaccessor = 28
-  final val COVARIANT = 29
-  final val CONTRAVARIANT = 30
-  final val SCALA2X = 31
-  final val DEFAULTparameterized = 32
-  final val STABLE = 33
-  final val MACRO = 34
-  final val ERASED = 35
-  final val PARAMsetter = 36
-  final val EMPTYTREE = 37
-  final val EMPTYTYPETREE = 38
+  final val INLINE = 16
+  final val STATIC = 17
+  final val OBJECT = 18
+  final val TRAIT = 19
+  final val ENUM = 20
+  final val LOCAL = 21
+  final val SYNTHETIC = 22
+  final val ARTIFACT = 23
+  final val MUTABLE = 24
+  final val LABEL = 25
+  final val FIELDaccessor = 26
+  final val CASEaccessor = 27
+  final val COVARIANT = 28
+  final val CONTRAVARIANT = 29
+  final val SCALA2X = 30
+  final val DEFAULTparameterized = 31
+  final val STABLE = 32
+  final val MACRO = 33
+  final val ERASED = 34
+  final val PARAMsetter = 35
 
   // Cat. 2:    tag Nat
 
@@ -395,36 +380,35 @@ object TastyFormat {
   final val RETURN = 144
   final val WHILE = 145
   final val TRY = 146
-  final val INLINED = 147
-  final val SELECTouter = 148
-  final val REPEATED = 149
-  final val BIND = 150
-  final val ALTERNATIVE = 151
-  final val UNAPPLY = 152
-  final val ANNOTATEDtype = 153
-  final val ANNOTATEDtpt = 154
-  final val CASEDEF = 155
-  final val TEMPLATE = 156
-  final val SUPER = 157
-  final val SUPERtype = 158
-  final val REFINEDtype = 159
-  final val REFINEDtpt = 160
-  final val APPLIEDtype = 161
-  final val APPLIEDtpt = 162
-  final val TYPEBOUNDS = 163
-  final val TYPEBOUNDStpt = 164
-  final val ANDtype = 165
-  final val ANDtpt = 166
-  final val ORtype = 167
-  final val ORtpt = 168
-  final val POLYtype = 169
-  final val TYPELAMBDAtype = 170
-  final val LAMBDAtpt = 171
-  final val PARAMtype = 172
-  final val ANNOTATION = 173
-  final val TERMREFin = 174
-  final val TYPEREFin = 175
-  final val OBJECTDEF = 176
+  final val SELECTouter = 147
+  final val REPEATED = 148
+  final val BIND = 149
+  final val ALTERNATIVE = 150
+  final val UNAPPLY = 151
+  final val ANNOTATEDtype = 152
+  final val ANNOTATEDtpt = 153
+  final val CASEDEF = 154
+  final val TEMPLATE = 155
+  final val SUPER = 156
+  final val SUPERtype = 157
+  final val REFINEDtype = 158
+  final val REFINEDtpt = 159
+  final val APPLIEDtype = 160
+  final val APPLIEDtpt = 161
+  final val TYPEBOUNDS = 162
+  final val TYPEBOUNDStpt = 163
+  final val ANDtype = 164
+  final val ANDtpt = 165
+  final val ORtype = 166
+  final val ORtpt = 167
+  final val POLYtype = 168
+  final val TYPELAMBDAtype = 169
+  final val LAMBDAtpt = 170
+  final val PARAMtype = 171
+  final val ANNOTATION = 172
+  final val TERMREFin = 173
+  final val TYPEREFin = 174
+  final val OBJECTDEF = 175
 
   // In binary: 101101EI
   // I = implicit method type
@@ -437,16 +421,7 @@ object TastyFormat {
   final val MATCHtype = 190
   final val MATCHtpt = 191
 
-  final val UNTYPEDSPLICE = 199
-
-  // Tags for untyped trees only:
-  final val TYPEDSPLICE = 200
-  final val FUNCTION = 201
-  final val INFIXOP = 202
-  final val PATDEF = 203
-  final val TUPLE = 204
-
-  def methodType(isImplicit: Boolean = false, isErased: Boolean = false) = {
+  def methodType(isImplicit: Boolean = false, isErased: Boolean = false): Int = {
     val implicitOffset = if (isImplicit) 1 else 0
     val erasedOffset = if (isErased) 2 else 0
     METHODtype + implicitOffset + erasedOffset
@@ -460,17 +435,17 @@ object TastyFormat {
   final val firstLengthTreeTag = PACKAGE
 
   /** Useful for debugging */
-  def isLegalTag(tag: Int) =
-    firstSimpleTreeTag <= tag && tag <= EMPTYTYPETREE ||
+  def isLegalTag(tag: Int): Boolean =
+    firstSimpleTreeTag <= tag && tag <= PARAMsetter ||
     firstNatTreeTag <= tag && tag <= SYMBOLconst ||
     firstASTTreeTag <= tag && tag <= SINGLETONtpt ||
     firstNatASTTreeTag <= tag && tag <= NAMEDARG ||
     firstLengthTreeTag <= tag && tag <= MATCHtpt ||
     tag == HOLE
 
-  def isParamTag(tag: Int) = tag == PARAM || tag == TYPEPARAM
+  def isParamTag(tag: Int): Boolean = tag == PARAM || tag == TYPEPARAM
 
-  def isModifierTag(tag: Int) = tag match {
+  def isModifierTag(tag: Int): Boolean = tag match {
     case PRIVATE
        | INTERNAL
        | PROTECTED
@@ -506,7 +481,7 @@ object TastyFormat {
     case _ => false
   }
 
-  def isTypeTreeTag(tag: Int) = tag match {
+  def isTypeTreeTag(tag: Int): Boolean = tag match {
     case IDENTtpt
        | SELECTtpt
        | SINGLETONtpt
@@ -557,8 +532,6 @@ object TastyFormat {
     case DEFAULTparameterized => "DEFAULTparameterized"
     case STABLE => "STABLE"
     case PARAMsetter => "PARAMsetter"
-    case EMPTYTREE => "EMPTYTREE"
-    case EMPTYTYPETREE => "EMPTYTYPETREE"
 
     case SHAREDterm => "SHAREDterm"
     case SHAREDtype => "SHAREDtype"
@@ -610,7 +583,6 @@ object TastyFormat {
     case MATCH => "MATCH"
     case RETURN => "RETURN"
     case WHILE => "WHILE"
-    case INLINED => "INLINED"
     case SELECTouter => "SELECTouter"
     case TRY => "TRY"
     case REPEATED => "REPEATED"
@@ -661,19 +633,12 @@ object TastyFormat {
     case PRIVATEqualified => "PRIVATEqualified"
     case PROTECTEDqualified => "PROTECTEDqualified"
     case HOLE => "HOLE"
-
-    case UNTYPEDSPLICE => "UNTYPEDSPLICE"
-    case TYPEDSPLICE => "TYPEDSPLICE"
-    case FUNCTION => "FUNCTION"
-    case INFIXOP => "INFIXOP"
-    case TUPLE => "TUPLE"
-    case PATDEF => "PATDEF"
   }
 
   /** @return If non-negative, the number of leading references (represented as nats) of a length/trees entry.
    *          If negative, minus the number of leading non-reference trees.
    */
-  def numRefs(tag: Int) = tag match {
+  def numRefs(tag: Int): Int = tag match {
     case VALDEF | DEFDEF | TYPEDEF | OBJECTDEF | TYPEPARAM | PARAM | NAMEDARG | RETURN | BIND |
          SELFDEF | REFINEDtype | TERMREFin | TYPEREFin | HOLE => 1
     case RENAMED | PARAMtype => 2

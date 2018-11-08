@@ -3,17 +3,9 @@ package dotc
 
 import core._
 import Contexts._
-import Periods._
-import Symbols._
-import Types._
-import Scopes._
-import typer.{FrontEnd, ImportInfo, RefChecks, Typer}
-import reporting.{ConsoleReporter, Reporter}
+import typer.{FrontEnd, RefChecks}
 import Phases.Phase
 import transform._
-import util.FreshNameCreator
-import core.DenotTransformers.DenotTransformer
-import core.Denotations.SingleDenotation
 import dotty.tools.backend.jvm.{CollectSuperCalls, GenBCode, LabelDefs}
 import dotty.tools.dotc.transform.localopt.StringInterpolatorOpt
 
@@ -52,7 +44,7 @@ class Compiler {
   /** Phases dealing with TASTY tree pickling and unpickling */
   protected def picklerPhases: List[List[Phase]] =
     List(new Pickler) ::            // Generate TASTY info
-    List(new ReifyQuotes) ::        // Turn quoted trees into explicit run-time data structures
+    List(new Staging) ::            // Inline calls, expand macros and turn quoted trees into explicit run-time data structures
     Nil
 
   /** Phases dealing with the transformation from pickled trees to backend trees */
@@ -67,7 +59,6 @@ class Compiler {
          new ProtectedAccessors,     // Add accessors for protected members
          new ExtensionMethods,       // Expand methods of value classes with extension methods
          new ShortcutImplicits,      // Allow implicit functions without creating closures
-         new TailRec,                // Rewrite tail recursion to loops
          new ByNameClosures,         // Expand arguments to by-name parameters to closures
          new LiftTry,                // Put try expressions that might execute on non-empty stacks into their own methods
          new HoistSuperArgs,         // Hoist complex arguments of supercalls to enclosing scope
@@ -78,8 +69,7 @@ class Compiler {
          new ExplicitOuter,          // Add accessors to outer classes from nested ones.
          new ExplicitSelf,           // Make references to non-trivial self types explicit as casts
          new StringInterpolatorOpt,  // Optimizes raw and s string interpolators by rewriting them to string concatentations
-         new CrossCastAnd,           // Normalize selections involving intersection types.
-         new Splitter) ::            // Expand selections involving union types into conditionals
+         new CrossCastAnd) ::        // Normalize selections involving intersection types.
     List(new PruneErasedDefs,        // Drop erased definitions from scopes and simplify erased expressions
          new VCInlineMethods,        // Inlines calls to value class methods
          new SeqLiterals,            // Express vararg arguments as arrays
@@ -96,6 +86,7 @@ class Compiler {
     List(new Erasure) ::             // Rewrite types to JVM model, erasing all type parameters, abstract types and refinements.
     List(new ElimErasedValueType,    // Expand erased value types to their underlying implmementation types
          new VCElideAllocations,     // Peep-hole optimization to eliminate unnecessary value class allocations
+         new TailRec,                // Rewrite tail recursion to loops
          new Mixin,                  // Expand trait fields and trait initializers
          new LazyVals,               // Expand lazy vals
          new Memoize,                // Add private fields to getters and setters
@@ -126,8 +117,8 @@ class Compiler {
     List(new GenBCode) ::            // Generate JVM bytecode
     Nil
 
-  var runId = 1
-  def nextRunId = {
+  var runId: Int = 1
+  def nextRunId: Int = {
     runId += 1; runId
   }
 

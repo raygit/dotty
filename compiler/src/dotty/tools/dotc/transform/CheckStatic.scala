@@ -8,7 +8,7 @@ import Contexts.Context
 import Symbols._
 import dotty.tools.dotc.ast.tpd
 import Decorators._
-import reporting.diagnostic.messages.{MissingCompanionForStatic, StaticFieldsOnlyAllowedInObjects}
+import reporting.diagnostic.messages._
 
 /** A transformer that check that requirements of Static fields\methods are implemented:
   *  1. Only objects can have members annotated with `@static`
@@ -25,7 +25,7 @@ import reporting.diagnostic.messages.{MissingCompanionForStatic, StaticFieldsOnl
 class CheckStatic extends MiniPhase {
   import ast.tpd._
 
-  override def phaseName = CheckStatic.name
+  override def phaseName: String = CheckStatic.name
 
   override def transformTemplate(tree: tpd.Template)(implicit ctx: Context): tpd.Tree = {
     val defns = tree.body.collect{case t: ValOrDefDef => t}
@@ -46,13 +46,13 @@ class CheckStatic extends MiniPhase {
         if (!companion.exists) {
           ctx.error(MissingCompanionForStatic(defn.symbol), defn.pos)
         } else if (clashes.exists) {
-          ctx.error("companion classes cannot define members with same name as @static member", defn.pos)
+          ctx.error(MemberWithSameNameAsStatic(), defn.pos)
          } else if (defn.symbol.is(Flags.Mutable) && companion.is(Flags.Trait)) {
-          ctx.error("Companions of traits cannot define mutable @static fields", defn.pos)
+          ctx.error(TraitCompanionWithMutableStatic(), defn.pos)
         } else if (defn.symbol.is(Flags.Lazy)) {
-          ctx.error("Lazy @static fields are not supported", defn.pos)
+          ctx.error(LazyStaticField(), defn.pos)
         } else if (defn.symbol.allOverriddenSymbols.nonEmpty) {
-          ctx.error("@static members cannot override or implement non-static ones", defn.pos)
+          ctx.error(StaticOverridingNonStaticMembers(), defn.pos)
         }
       } else hadNonStaticField = hadNonStaticField || defn.isInstanceOf[ValDef]
 
@@ -79,5 +79,5 @@ class CheckStatic extends MiniPhase {
 }
 
 object CheckStatic {
-  val name = "checkStatic"
+  val name: String = "checkStatic"
 }
