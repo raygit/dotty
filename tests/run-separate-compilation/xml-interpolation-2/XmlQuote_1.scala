@@ -1,6 +1,7 @@
+
 import scala.quoted._
 
-import scala.tasty.Tasty
+import scala.tasty.Reflection
 
 import scala.language.implicitConversions
 
@@ -14,14 +15,14 @@ object XmlQuote {
   implicit inline def SCOps(ctx: => StringContext): SCOps = new SCOps(ctx)
 
   def impl(receiver: Expr[SCOps], args: Expr[Seq[Any]])
-          (implicit tasty: Tasty): Expr[Xml] = {
-    import tasty._
+          (implicit reflect: Reflection): Expr[Xml] = {
+    import reflect._
     import Term._
 
     // for debugging purpose
     def pp(tree: Tree): Unit = {
       println(tree.show)
-      println(tasty.showSourceCode.showTree(tree))
+      println(tree.showCode)
     }
 
     def isSCOpsConversion(tree: Term) =
@@ -32,8 +33,13 @@ object XmlQuote {
       tree.symbol.fullName == "scala.StringContext$.apply" ||
       tree.symbol.fullName == "scala.StringContext.<init>"
 
+    def stripTyped(t: Term) = t match {
+      case Typed(expr, _) => expr
+      case _ => t
+    }
+
     // XmlQuote.SCOps(StringContext.apply([p0, ...]: String*)
-    val parts: List[String] = receiver.toTasty.underlying match {
+    val parts: List[String] = stripTyped(receiver.reflect.underlying) match {
       case Apply(conv, List(ctx1)) if isSCOpsConversion(conv) =>
         ctx1 match {
           case Apply(fun, List(Typed(Repeated(values), _))) if isStringContextApply(fun) =>
@@ -48,13 +54,13 @@ object XmlQuote {
     }
 
     // [a0, ...]: Any*
-    val args2: Expr[List[Any]] = args.toTasty.underlyingArgument match {
+    val args2: Expr[List[Any]] = args.reflect.underlyingArgument match {
       case Typed(Repeated(args0), _) => // statically known args, make list directly
         def liftListOfAny(lst: List[Expr[Any]]): Expr[List[Any]] = lst match {
           case x :: xs  => '{ ~x :: ~liftListOfAny(xs) }
           case Nil => '(Nil)
         }
-        liftListOfAny(args0.map(_.toExpr[Any]))
+        liftListOfAny(args0.map(_.reify[Any]))
       case _ =>
         '((~args).toList)
 

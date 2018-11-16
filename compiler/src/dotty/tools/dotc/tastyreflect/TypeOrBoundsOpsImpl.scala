@@ -2,7 +2,7 @@ package dotty.tools.dotc.tastyreflect
 
 import dotty.tools.dotc.core.{Names, Types}
 
-trait TypeOrBoundsOpsImpl extends scala.tasty.reflect.TypeOrBoundsOps with TastyCoreImpl {
+trait TypeOrBoundsOpsImpl extends scala.tasty.reflect.TypeOrBoundsOps with CoreImpl {
 
   // ===== Types ====================================================
 
@@ -119,6 +119,13 @@ trait TypeOrBoundsOpsImpl extends scala.tasty.reflect.TypeOrBoundsOps with Tasty
     object OrType extends OrTypeExtractor {
       def unapply(x: TypeOrBounds)(implicit ctx: Context): Option[(Type, Type)] = x match {
         case Types.OrType(left, right) => Some(left.stripTypeVar, right.stripTypeVar)
+        case _ => None
+      }
+    }
+
+    object MatchType extends MatchTypeExtractor {
+      def unapply(x: TypeOrBounds)(implicit ctx: Context): Option[(Type, Type, List[Type])] = x match {
+        case Types.MatchType(bound, scrutinee, cases) => Some((bound, scrutinee, cases))
         case _ => None
       }
     }

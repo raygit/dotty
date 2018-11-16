@@ -1,11 +1,13 @@
 package scala.tasty
 package reflect
 
-trait PatternOps extends TastyCore {
+trait PatternOps extends Core {
 
   trait PatternAPI {
-    def tpe(implicit ctx: Context): Type
+    /** Position in the source code */
     def pos(implicit ctx: Context): Position
+
+    def tpe(implicit ctx: Context): Type
   }
   implicit def PatternDeco(pattern: Pattern): PatternAPI
 

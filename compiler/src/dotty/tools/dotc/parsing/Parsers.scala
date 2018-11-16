@@ -1744,6 +1744,7 @@ object Parsers {
       case PRIVATE     => Mod.Private()
       case PROTECTED   => Mod.Protected()
       case SEALED      => Mod.Sealed()
+      case OPAQUE      => Mod.Opaque()
       case IDENTIFIER if name == nme.INLINEkw => Mod.Inline()
     }
 
@@ -2166,7 +2167,7 @@ object Parsers {
       }
     }
 
-    /** DefDef ::= DefSig (`:' Type [`=' Expr] | "=" Expr)
+    /** DefDef ::= DefSig [(‘:’ | ‘<:’) Type] ‘=’ Expr
      *           | this ParamClause ParamClauses `=' ConstrExpr
      *  DefDcl ::= DefSig `:' Type
      *  DefSig ::= id [DefTypeParamClause] ParamClauses
@@ -2189,13 +2190,19 @@ object Parsers {
           if (!(in.token == LBRACE && scala2ProcedureSyntax(""))) accept(EQUALS)
           atPos(in.offset) { constrExpr() }
         }
-        makeConstructor(Nil, vparamss, rhs).withMods(mods)
+        makeConstructor(Nil, vparamss, rhs).withMods(mods).setComment(in.getDocComment(start))
       } else {
         val mods1 = addFlag(mods, Method)
         val name = ident()
         val tparams = typeParamClauseOpt(ParamOwner.Def)
         val vparamss = paramClauses(name)
-        var tpt = fromWithinReturnType(typedOpt())
+        var tpt = fromWithinReturnType {
+          if (in.token == SUBTYPE && mods.is(Inline)) {
+            in.nextToken()
+            TypeBoundsTree(EmptyTree, toplevelTyp())
+          }
+          else typedOpt()
+        }
         if (in.isScala2Mode) newLineOptWhenFollowedBy(LBRACE)
         val rhs =
           if (in.token == EQUALS) {

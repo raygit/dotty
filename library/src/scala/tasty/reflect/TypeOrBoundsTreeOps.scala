@@ -1,7 +1,7 @@
 package scala.tasty
 package reflect
 
-trait TypeOrBoundsTreeOps extends TastyCore {
+trait TypeOrBoundsTreeOps extends Core {
 
   trait TypeOrBoundsTreeAPI {
     def tpe(implicit ctx: Context): TypeOrBounds
@@ -11,8 +11,11 @@ trait TypeOrBoundsTreeOps extends TastyCore {
   // ----- TypeTrees ------------------------------------------------
 
   trait TypeTreeAPI {
+    /** Position in the source code */
     def pos(implicit ctx: Context): Position
+
     def tpe(implicit ctx: Context): Type
+    def symbol(implicit ctx: Context): Symbol
   }
   implicit def TypeTreeDeco(tpt: TypeTree): TypeTreeAPI
 
@@ -75,6 +78,11 @@ trait TypeOrBoundsTreeOps extends TastyCore {
     val Or: OrExtractor
     abstract class OrExtractor {
       def unapply(typeOrBoundsTree: TypeOrBoundsTree)(implicit ctx: Context): Option[(TypeTree, TypeTree)]
+    }
+
+    val MatchType: MatchTypeExtractor
+    abstract class MatchTypeExtractor {
+      def unapply(typeOrBoundsTree: TypeOrBoundsTree)(implicit ctx: Context): Option[(Option[TypeTree], TypeTree, List[TypeCaseDef])]
     }
 
     val ByName: ByNameExtractor

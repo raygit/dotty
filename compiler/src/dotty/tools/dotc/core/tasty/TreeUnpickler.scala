@@ -604,7 +604,9 @@ class TreeUnpickler(reader: TastyReader,
           case LAZY => addFlag(Lazy)
           case OVERRIDE => addFlag(Override)
           case INLINE => addFlag(Inline)
+          case INLINEPROXY => addFlag(InlineProxy)
           case MACRO => addFlag(Macro)
+          case OPAQUE => addFlag(Opaque)
           case STATIC => addFlag(JavaStatic)
           case OBJECT => addFlag(Module)
           case TRAIT => addFlag(Trait)
@@ -613,7 +615,6 @@ class TreeUnpickler(reader: TastyReader,
           case SYNTHETIC => addFlag(Synthetic)
           case ARTIFACT => addFlag(Artifact)
           case MUTABLE => addFlag(Mutable)
-          case LABEL => addFlag(Label)
           case FIELDaccessor => addFlag(Accessor)
           case CASEaccessor => addFlag(CaseAccessor)
           case COVARIANT => addFlag(Covariant)
@@ -796,12 +797,9 @@ class TreeUnpickler(reader: TastyReader,
             // The only case to check here is if `sym` is a root. In this case
             // `companion` might have been entered by the environment but it might
             // be missing from the Tasty file. So we check explicitly for that.
-            def isCodefined =
-              roots.contains(companion.denot) == seenRoots.contains(companion)
-            if (companion.exists && isCodefined) {
-              if (sym is Flags.ModuleClass) sym.registerCompanionMethod(nme.COMPANION_CLASS_METHOD, companion)
-              else sym.registerCompanionMethod(nme.COMPANION_MODULE_METHOD, companion)
-            }
+            def isCodefined = roots.contains(companion.denot) == seenRoots.contains(companion)
+
+            if (companion.exists && isCodefined) sym.registerCompanion(companion)
             TypeDef(readTemplate(localCtx))
           } else {
             sym.info = TypeBounds.empty // needed to avoid cyclic references when unpicklin rhs, see i3816.scala
@@ -816,6 +814,7 @@ class TreeUnpickler(reader: TastyReader,
               case _ => rhs.tpe.toBounds
             }
             sym.resetFlag(Provisional)
+            sym.normalizeOpaque()
             TypeDef(rhs)
           }
         case PARAM =>
@@ -842,10 +841,7 @@ class TreeUnpickler(reader: TastyReader,
       if (!sym.isType) { // Only terms might have leaky aliases, see the documentation of `checkNoPrivateLeaks`
         sym.info = ta.avoidPrivateLeaks(sym, tree.pos)
       }
-      if ((sym.isClass || sym.is(CaseVal)) && sym.isLocal)
-        // Child annotations for local classes and enum values are not pickled, so
-        // need to be re-established here.
-        sym.registerIfChild(late = true)
+
       sym.defTree = tree
 
       if (ctx.mode.is(Mode.ReadComments)) {
@@ -1073,6 +1069,17 @@ class TreeUnpickler(reader: TastyReader,
               val stats = readStats(ctx.owner, end)
               val expr = exprReader.readTerm()
               Block(stats, expr)
+            case INLINED =>
+              val exprReader = fork
+              skipTree()
+              def maybeCall = nextUnsharedTag match {
+                case VALDEF | DEFDEF => EmptyTree
+                case _ => readTerm()
+              }
+              val call = ifBefore(end)(maybeCall, EmptyTree)
+              val bindings = readStats(ctx.owner, end).asInstanceOf[List[ValOrDefDef]]
+              val expansion = exprReader.readTerm() // need bindings in scope, so needs to be read before
+              Inlined(call, bindings, expansion)
             case IF =>
               If(readTerm(), readTerm(), readTerm())
             case LAMBDA =>

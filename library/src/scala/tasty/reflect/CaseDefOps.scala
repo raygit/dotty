@@ -2,7 +2,7 @@ package scala.tasty
 package reflect
 
 /** Tasty reflect case definition */
-trait CaseDefOps extends TastyCore {
+trait CaseDefOps extends Core {
 
   trait CaseDefAPI {
     def pattern(implicit ctx: Context): Pattern
@@ -16,4 +16,15 @@ trait CaseDefOps extends TastyCore {
     def unapply(x: CaseDef): Option[(Pattern, Option[Term], Term)]
   }
 
+
+  trait TypeCaseDefAPI {
+    def pattern(implicit ctx: Context): TypeTree
+    def rhs(implicit ctx: Context): TypeTree
+  }
+  implicit def TypeCaseDefDeco(caseDef: TypeCaseDef): TypeCaseDefAPI
+
+  val TypeCaseDef: TypeCaseDefExtractor
+  abstract class TypeCaseDefExtractor {
+    def unapply(x: TypeCaseDef): Option[(TypeTree, TypeTree)]
+  }
 }

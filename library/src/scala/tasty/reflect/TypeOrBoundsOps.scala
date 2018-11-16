@@ -1,7 +1,7 @@
 package scala.tasty
 package reflect
 
-trait TypeOrBoundsOps extends TastyCore {
+trait TypeOrBoundsOps extends Core {
 
   // ----- Types ----------------------------------------------------
 
@@ -90,6 +90,11 @@ trait TypeOrBoundsOps extends TastyCore {
     val OrType: OrTypeExtractor
     abstract class OrTypeExtractor {
       def unapply(typeOrBounds: TypeOrBounds)(implicit ctx: Context): Option[(Type, Type)]
+    }
+
+    val MatchType: MatchTypeExtractor
+    abstract class MatchTypeExtractor {
+      def unapply(typeOrBounds: TypeOrBounds)(implicit ctx: Context): Option[(Type, Type, List[Type])]
     }
 
     val ByNameType: ByNameTypeExtractor

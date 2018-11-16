@@ -319,16 +319,6 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     Block(cdef :: Nil, New(cls.typeRef, Nil))
   }
 
-  // { <label> def while$(): Unit = if (cond) { body; while$() } ; while$() }
-  def WhileDo(owner: Symbol, cond: Tree, body: List[Tree])(implicit ctx: Context): Tree = {
-    val sym = ctx.newSymbol(owner, nme.WHILE_PREFIX, Flags.Label | Flags.Synthetic,
-      MethodType(Nil, defn.UnitType), coord = cond.pos)
-
-    val call = Apply(ref(sym), Nil)
-    val rhs = If(cond, Block(body, call), unitLiteral)
-    Block(List(DefDef(sym, rhs)), call)
-  }
-
   def Import(expr: Tree, selectors: List[untpd.Tree])(implicit ctx: Context): Import =
     ta.assignType(untpd.Import(expr, selectors), ctx.newImportSymbol(ctx.owner, expr))
 
@@ -1112,9 +1102,9 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
   private val InlinedCalls = new Property.Key[List[Tree]]
 
   /** Record an enclosing inlined call.
-    * EmptyTree calls (for parameters) cancel the next-enclosing call in the list instead of being added to it.
-    * We assume parameters are never nested inside parameters.
-    */
+   *  EmptyTree calls (for parameters) cancel the next-enclosing call in the list instead of being added to it.
+   *  We assume parameters are never nested inside parameters.
+   */
   override def inlineContext(call: Tree)(implicit ctx: Context): Context = {
     // We assume enclosingInlineds is already normalized, and only process the new call with the head.
     val oldIC = enclosingInlineds
@@ -1128,7 +1118,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
   }
 
   /** All enclosing calls that are currently inlined, from innermost to outermost.
-    */
+   */
   def enclosingInlineds(implicit ctx: Context): List[Tree] =
     ctx.property(InlinedCalls).getOrElse(Nil)
 

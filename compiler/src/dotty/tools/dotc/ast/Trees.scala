@@ -350,7 +350,8 @@ object Trees {
       asInstanceOf[ThisTree[Untyped]]
     }
 
-    protected def setMods(mods: untpd.Modifiers): Unit = myMods = mods
+    /** Destructively update modifiers. To be used with care. */
+    def setMods(mods: untpd.Modifiers): Unit = myMods = mods
 
     /** The position of the name defined by this definition.
      *  This is a point position if the definition is synthetic, or a range position
@@ -585,8 +586,9 @@ object Trees {
 
   /** A tree representing inlined code.
    *
-   *  @param  call      Info about the original call that was inlined.
-   *                    Only a reference to the toplevel class from which the call was inlined.
+   *  @param  call      Info about the original call that was inlined
+   *                    Until PostTyper, this is the full call, afterwards only
+   *                    a reference to the toplevel class from which the call was inlined.
    *  @param  bindings  Bindings for proxies to be used in the inlined code
    *  @param  expansion The inlined tree, minus bindings.
    *

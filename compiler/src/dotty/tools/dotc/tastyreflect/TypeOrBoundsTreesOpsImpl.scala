@@ -6,7 +6,7 @@ import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Types
 
 
-trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps with TastyCoreImpl {
+trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps with CoreImpl {
 
   // ----- TypeOrBoundsTree ------------------------------------------------
 
@@ -19,6 +19,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
   def TypeTreeDeco(tpt: TypeTree): TypeTreeAPI = new TypeTreeAPI {
     def pos(implicit ctx: Context): Position = tpt.pos
     def tpe(implicit ctx: Context): Type = tpt.tpe.stripTypeVar
+    def symbol(implicit ctx: Context): Symbol = tpt.symbol
   }
 
   object IsTypeTree extends IsTypeTreeExtractor {
@@ -96,6 +97,13 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
     object Or extends OrExtractor {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[(TypeTree, TypeTree)] = x match {
         case x: tpd.OrTypeTree => Some(x.left, x.right)
+        case _ => None
+      }
+    }
+
+    object MatchType extends MatchTypeExtractor {
+      def unapply(x: TypeOrBoundsTree)(implicit ctx: Context): Option[(Option[TypeTree], TypeTree, List[CaseDef])] = x match {
+        case x: tpd.MatchTypeTree => Some((if (x.bound == tpd.EmptyTree) None else Some(x.bound), x.selector, x.cases))
         case _ => None
       }
     }

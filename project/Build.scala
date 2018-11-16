@@ -870,7 +870,7 @@ object Build {
       fork in run := true,
       fork in Test := true,
       libraryDependencies ++= Seq(
-        "org.eclipse.lsp4j" % "org.eclipse.lsp4j" % "0.5.0.M1",
+        "org.eclipse.lsp4j" % "org.eclipse.lsp4j" % "0.5.0",
         Dependencies.`jackson-databind`
       ),
       javaOptions := (javaOptions in `dotty-compiler-bootstrapped`).value,
@@ -1261,7 +1261,7 @@ object Build {
   //     mainClass in Compile := Some("hello.world"),
 
   //     // While developing the Scala.js back-end, it is very useful to see the trees dotc gives us
-  //     scalacOptions += "-Xprint:labelDef",
+  //     scalacOptions += "-Xprint:collectSuperCalls",
 
   //     /* Debug-friendly Scala.js optimizer options.
   //      * In particular, typecheck the Scala.js IR found on the classpath.

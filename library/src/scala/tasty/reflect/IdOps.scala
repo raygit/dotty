@@ -1,9 +1,10 @@
 package scala.tasty
 package reflect
 
-trait IdOps extends TastyCore {
+trait IdOps extends Core {
 
   trait IdAPI {
+    /** Position in the source code */
     def pos(implicit ctx: Context): Position
     def name(implicit ctx: Context): String
   }
