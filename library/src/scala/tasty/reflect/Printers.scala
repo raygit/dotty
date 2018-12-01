@@ -101,8 +101,8 @@ trait Printers
       def visitTree(x: Tree): Buffer = x match {
         case Term.Ident(name) =>
           this += "Term.Ident(\"" += name += "\")"
-        case Term.Select(qualifier, name, signature) =>
-          this += "Term.Select(" += qualifier += ", \"" += name += "\", " += signature += ")"
+        case Term.Select(qualifier, name) =>
+          this += "Term.Select(" += qualifier += ", \"" += name += "\")"
         case Term.This(qual) =>
           this += "Term.This(" += qual += ")"
         case Term.Super(qual, mix) =>
@@ -160,8 +160,8 @@ trait Printers
       }
 
       def visitTypeTree(x: TypeOrBoundsTree): Buffer = x match {
-        case TypeTree.Synthetic() =>
-          this += "TypeTree.Synthetic()"
+        case TypeTree.Inferred() =>
+          this += "TypeTree.Inferred()"
         case TypeTree.Ident(name) =>
           this += "TypeTree.Ident(\"" += name += "\")"
         case TypeTree.Select(qualifier, name) =>
@@ -182,7 +182,7 @@ trait Printers
           this += "TypeTree.ByName(" += result += ")"
         case TypeTree.Annotated(arg, annot) =>
           this += "TypeTree.Annotated(" += arg += ", " += annot += ")"
-        case TypeTree.TypeLambdaTree(tparams, body) =>
+        case TypeTree.LambdaTypeTree(tparams, body) =>
           this += "TypeTree.LambdaTypeTree(" ++= tparams += ", " += body += ")"
         case TypeTree.Bind(name, bounds) =>
           this += "TypeTree.Bind(" += name += ", " += bounds += ")"
@@ -190,8 +190,8 @@ trait Printers
           this += "TypeTree.Block(" ++= aliases += ", " += tpt += ")"
         case TypeBoundsTree(lo, hi) =>
           this += "TypeBoundsTree(" += lo += ", " += hi += ")"
-        case SyntheticBounds() =>
-          this += s"SyntheticBounds()"
+        case WildcardTypeTree() =>
+          this += s"WildcardTypeTree()"
         case TypeTree.MatchType(bound, selector, cases) =>
           this += "TypeTree.MatchType(" += bound += ", " += selector += ", " ++= cases += ")"
       }
@@ -522,8 +522,8 @@ trait Printers
           }
 
           val parents1 = parents.filter {
-            case IsTerm(Term.Apply(Term.Select(Term.New(tpt), _, _), _)) => !Types.JavaLangObject.unapply(tpt.tpe)
-            case IsTypeTree(TypeTree.Select(Term.Select(Term.Ident("_root_"), "scala", _), "Product")) => false
+            case IsTerm(Term.Apply(Term.Select(Term.New(tpt), _), _)) => !Types.JavaLangObject.unapply(tpt.tpe)
+            case IsTypeTree(TypeTree.Select(Term.Select(Term.Ident("_root_"), "scala"), "Product")) => false
             case _ => true
           }
           if (parents1.nonEmpty)
@@ -538,7 +538,7 @@ trait Printers
             case IsTerm(Term.Apply(fun, args)) =>
               printParent(fun)
               inParens(printTrees(args, ", "))
-            case IsTerm(Term.Select(Term.New(tpt), _, _)) =>
+            case IsTerm(Term.Select(Term.New(tpt), _)) =>
               printTypeTree(tpt)
             case IsTerm(parent) =>
               throw new MatchError(parent.show)
@@ -678,7 +678,7 @@ trait Printers
         case IsTerm(tree @ Term.Ident(_)) =>
           printType(tree.tpe)
 
-        case Term.Select(qual, name, sig) =>
+        case Term.Select(qual, name) =>
           printTree(qual)
           if (name != "<init>" && name != "package")
             this += "." += name
@@ -709,7 +709,7 @@ trait Printers
 
         case Term.Apply(fn, args) =>
           fn match {
-            case Term.Select(Term.This(_), "<init>", _) => this += "this" // call to constructor inside a constructor
+            case Term.Select(Term.This(_), "<init>") => this += "this" // call to constructor inside a constructor
             case _ => printTree(fn)
           }
           val args1 = args match {
@@ -722,7 +722,7 @@ trait Printers
         case Term.TypeApply(fn, args) =>
           printTree(fn)
           fn match {
-            case Term.Select(Term.New(TypeTree.Applied(_, _)), "<init>", _) =>
+            case Term.Select(Term.New(TypeTree.Applied(_, _)), "<init>") =>
               // type bounds already printed in `fn`
               this
             case _ =>
@@ -853,7 +853,7 @@ trait Printers
           next match {
             case Term.Block(_, _) => this += doubleLineBreak()
             case Term.Inlined(_, _, _) => this += doubleLineBreak()
-            case Term.Select(qual, _, _) => printSeparator(qual)
+            case Term.Select(qual, _) => printSeparator(qual)
             case Term.Apply(fn, _) => printSeparator(fn)
             case Term.TypeApply(fn, _) => printSeparator(fn)
             case _ => this += lineBreak()
@@ -996,9 +996,9 @@ trait Printers
         this += arg.name
         arg.rhs match {
           case IsTypeBoundsTree(rhs) => printBoundsTree(rhs)
-          case rhs @ SyntheticBounds() =>
+          case rhs @ WildcardTypeTree() =>
             printTypeOrBound(rhs.tpe)
-          case rhs @ TypeTree.TypeLambdaTree(tparams, body) =>
+          case rhs @ TypeTree.LambdaTypeTree(tparams, body) =>
             def printParam(t: TypeOrBoundsTree): Unit = t match {
               case IsTypeBoundsTree(t) => printBoundsTree(t)
               case IsTypeTree(t) => printTypeTree(t)
@@ -1141,8 +1141,8 @@ trait Printers
 
         case Pattern.Unapply(fun, implicits, patterns) =>
           fun match {
-            case Term.Select(extractor, "unapply" | "unapplySeq", _) => printTree(extractor)
-            case Term.TypeApply(Term.Select(extractor, "unapply" | "unapplySeq", _), _) => printTree(extractor)
+            case Term.Select(extractor, "unapply" | "unapplySeq") => printTree(extractor)
+            case Term.TypeApply(Term.Select(extractor, "unapply" | "unapplySeq"), _) => printTree(extractor)
             case _ => throw new MatchError(fun.show)
           }
           inParens(printPatterns(patterns, ", "))
@@ -1184,14 +1184,14 @@ trait Printers
           printTypeTree(lo)
           this += " <: "
           printTypeTree(hi)
-        case tpt @ SyntheticBounds() =>
+        case tpt @ WildcardTypeTree() =>
           printTypeOrBound(tpt.tpe)
         case IsTypeTree(tpt) =>
           printTypeTree(tpt)
       }
 
       def printTypeTree(tree: TypeTree): Buffer = tree match {
-        case TypeTree.Synthetic() =>
+        case TypeTree.Inferred() =>
           // TODO try to move this logic into `printType`
           def printTypeAndAnnots(tpe: Type): Buffer = tpe match {
             case Type.AnnotatedType(tp, annot) =>
@@ -1264,7 +1264,7 @@ trait Printers
           this += highlightTypeDef("=> ", color)
           printTypeTree(result)
 
-        case TypeTree.TypeLambdaTree(tparams, body) =>
+        case TypeTree.LambdaTypeTree(tparams, body) =>
           printTargsDefs(tparams)
           this += highlightTypeDef(" => ", color)
           printTypeOrBoundsTree(body)
@@ -1510,13 +1510,13 @@ trait Printers
 
       def printBoundsTree(bounds: TypeBoundsTree): Buffer = {
         bounds.low match {
-          case TypeTree.Synthetic() =>
+          case TypeTree.Inferred() =>
           case low =>
             this += " >: "
             printTypeTree(low)
         }
         bounds.hi match {
-          case TypeTree.Synthetic() => this
+          case TypeTree.Inferred() => this
           case hi =>
             this += " <: "
             printTypeTree(hi)
@@ -1611,8 +1611,8 @@ trait Printers
     private object Annotation {
       def unapply(arg: Tree)(implicit ctx: Context): Option[(TypeTree, List[Term])] = arg match {
         case Term.New(annot) => Some((annot, Nil))
-        case Term.Apply(Term.Select(Term.New(annot), "<init>", _), args) => Some((annot, args))
-        case Term.Apply(Term.TypeApply(Term.Select(Term.New(annot), "<init>", _), targs), args) => Some((annot, args))
+        case Term.Apply(Term.Select(Term.New(annot), "<init>"), args) => Some((annot, args))
+        case Term.Apply(Term.TypeApply(Term.Select(Term.New(annot), "<init>"), targs), args) => Some((annot, args))
         case _ => None
       }
     }
