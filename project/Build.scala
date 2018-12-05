@@ -43,7 +43,7 @@ object Build {
   // This should be the latest published releases.
   // TODO: Have the vscode extension fetch these numbers from the Internet
   // instead of hardcoding them ?
-  val publishedDottyVersion = "0.11.0-bin-20181101-714ce80-NIGHTLY" // Using a nightly for now to get worksheet support
+  val publishedDottyVersion = "0.11.0-RC1"
   val publishedSbtDottyVersion = "0.2.6"
 
 
@@ -775,14 +775,14 @@ object Build {
   lazy val dottyLibrarySettings = Seq(
     libraryDependencies += "org.scala-lang" % "scala-library" % scalacVersion,
     // Add version-specific source directories:
-    // - files in src-scala3 will only be compiled by dotty
-    // - files in src-scala2 will only be compiled by scalac
+    // - files in src-non-bootstrapped will only be compiled by the reference compiler (scalac)
+    // - files in src-bootstrapped will only be compiled by the current dotty compiler (non-bootstrapped and bootstrapped)
     unmanagedSourceDirectories in Compile += {
       val baseDir = baseDirectory.value
       if (isDotty.value)
-        baseDir / "src-scala3"
+        baseDir / "src-bootstrapped"
       else
-        baseDir / "src-scala2"
+        baseDir / "src-non-bootstrapped"
     }
   )
 
@@ -992,7 +992,7 @@ object Build {
     settings(commonSettings).
     settings(
       EclipseKeys.skipProject := true,
-      version := "0.1.10-snapshot", // Keep in sync with package.json
+      version := "0.1.11-snapshot", // Keep in sync with package.json
       autoScalaLibrary := false,
       publishArtifact := false,
       includeFilter in unmanagedSources := NothingFilter | "*.ts" | "**.json",
