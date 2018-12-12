@@ -8,6 +8,83 @@ import dotty.tools.dotc.core.{Contexts, Types}
 
 trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps with CoreImpl {
 
+  def TypeTreeDeco(tpt: TypeTree): TypeTreeAPI = new TypeTreeAPI {
+    def pos(implicit ctx: Context): Position = tpt.pos
+    def symbol(implicit ctx: Context): Symbol = tpt.symbol
+    def tpe(implicit ctx: Context): Type = tpt.tpe.stripTypeVar
+  }
+
+  def InferredDeco(x: TypeTree.Inferred): TypeTree.InferredAPI = new TypeTree.InferredAPI {
+  }
+
+  def TypeIdentDeco(x: TypeTree.Ident): TypeTree.IdentAPI = new TypeTree.IdentAPI {
+    def name(implicit ctx: Contexts.Context): String = x.name.toString
+  }
+
+  def TypeSelectDeco(x: TypeTree.Select): TypeTree.SelectAPI = new TypeTree.SelectAPI {
+    def qualifier(implicit ctx: Contexts.Context): Term = x.qualifier
+    def name(implicit ctx: Contexts.Context): String = x.name.toString
+  }
+
+  def ProjectDeco(x: TypeTree.Project): TypeTree.ProjectAPI = new TypeTree.ProjectAPI {
+    def qualifier(implicit ctx: Contexts.Context): TypeTree = x.qualifier
+    def name(implicit ctx: Contexts.Context): String = x.name.toString
+  }
+
+  def SingletonDeco(x: TypeTree.Singleton): TypeTree.SingletonAPI = new TypeTree.SingletonAPI {
+    def ref(implicit ctx: Contexts.Context): Term = x.ref
+  }
+
+  def RefinedDeco(x: TypeTree.Refined): TypeTree.RefinedAPI = new TypeTree.RefinedAPI {
+    def tpt(implicit ctx: Contexts.Context): TypeTree = x.tpt
+    def refinements(implicit ctx: Contexts.Context): List[Definition] = x.refinements
+  }
+
+  def AppliedDeco(x: TypeTree.Applied): TypeTree.AppliedAPI = new TypeTree.AppliedAPI {
+    def tpt(implicit ctx: Contexts.Context): TypeTree = x.tpt
+    def args(implicit ctx: Contexts.Context): List[TypeOrBoundsTree] = x.args
+  }
+
+  def AnnotatedDeco(x: TypeTree.Annotated): TypeTree.AnnotatedAPI = new TypeTree.AnnotatedAPI {
+    def arg(implicit ctx: Contexts.Context): TypeTree = x.arg
+    def annotation(implicit ctx: Contexts.Context): Term = x.annot
+  }
+
+  def AndDeco(x: TypeTree.And): TypeTree.OrAPI = new TypeTree.OrAPI {
+    def left(implicit ctx: Contexts.Context): TypeTree = x.left
+    def right(implicit ctx: Contexts.Context): TypeTree = x.right
+  }
+
+  def OrDeco(x: TypeTree.Or): TypeTree.OrAPI = new TypeTree.OrAPI {
+    def left(implicit ctx: Contexts.Context): TypeTree = x.left
+    def right(implicit ctx: Contexts.Context): TypeTree = x.right
+  }
+
+  def MatchTypeTreeDeco(x: TypeTree.MatchType): TypeTree.MatchTypeAPI = new TypeTree.MatchTypeAPI {
+    def bound(implicit ctx: Contexts.Context): Option[TypeTree] = if (x.bound == tpd.EmptyTree) None else Some(x.bound)
+    def selector(implicit ctx: Contexts.Context): TypeTree = x.selector
+    def cases(implicit ctx: Contexts.Context): List[CaseDef] = x.cases
+  }
+
+  def ByNameDeco(x: TypeTree.ByName): TypeTree.ByNameAPI = new TypeTree.ByNameAPI {
+    def result(implicit ctx: Contexts.Context): TypeTree = x.result
+  }
+
+  def LambdaTypeTreeDeco(x: TypeTree.LambdaTypeTree): TypeTree.LambdaTypeTreeAPI = new TypeTree.LambdaTypeTreeAPI {
+    def tparams(implicit ctx: Contexts.Context): List[TypeDef] = x.tparams
+    def body(implicit ctx: Contexts.Context): TypeOrBoundsTree = x.body
+  }
+
+  def BindDeco(x: Bind): TypeTree.BindAPI = new TypeTree.BindAPI {
+    def name(implicit ctx: Contexts.Context): String = x.name.toString
+    def body(implicit ctx: Contexts.Context): TypeOrBoundsTree = x.body
+  }
+
+  def TypeBlockDeco(x: TypeTree.Block): TypeTree.BlockAPI = new TypeTree.BlockAPI {
+    def aliases(implicit ctx: Contexts.Context): List[TypeDef] = x.stats.map { case alias: TypeDef => alias }
+    def tpt(implicit ctx: Contexts.Context): TypeTree = x.expr
+  }
+
   // ----- TypeOrBoundsTree ------------------------------------------------
 
   def TypeOrBoundsTreeDeco(tpt: TypeOrBoundsTree): TypeOrBoundsTreeAPI = new TypeOrBoundsTreeAPI {
@@ -16,13 +93,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
 
   // ----- TypeTrees ------------------------------------------------
 
-  def TypeTreeDeco(tpt: TypeTree): TypeTreeAPI = new TypeTreeAPI {
-    def pos(implicit ctx: Context): Position = tpt.pos
-    def symbol(implicit ctx: Context): Symbol = tpt.symbol
-    def tpe(implicit ctx: Context): Type = tpt.tpe.stripTypeVar
-  }
-
-  object IsTypeTree extends IsTypeTreeExtractor {
+  object IsTypeTree extends IsTypeTreeModule {
     def unapply(x: TypeOrBoundsTree)(implicit ctx: Context): Option[TypeTree] =
       if (x.isType) Some(x) else None
     def unapply(termOrTypeTree: TermOrTypeTree)(implicit ctx: Context, dummy: DummyImplicit): Option[TypeTree] =
@@ -38,11 +109,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def InferredDeco(x: Inferred): InferredAPI = new InferredAPI {
-
-    }
-
-    object Inferred extends InferredExtractor {
+    object Inferred extends InferredModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Boolean = x match {
         case x @ Trees.TypeTree() => !x.tpe.isInstanceOf[Types.TypeBounds]
         case _ => false
@@ -56,11 +123,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def IdentDeco(x: Ident): IdentAPI = new IdentAPI {
-      def name(implicit ctx: Contexts.Context): String = x.name.toString
-    }
-
-    object Ident extends IdentExtractor {
+    object Ident extends IdentModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[String] = x match {
         case x: tpd.Ident if x.isType => Some(x.name.toString)
         case _ => None
@@ -74,12 +137,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def SelectDeco(x: Select): SelectAPI = new SelectAPI {
-      def qualifier(implicit ctx: Contexts.Context): Term = x.qualifier
-      def name(implicit ctx: Contexts.Context): String = x.name.toString
-    }
-
-    object Select extends SelectExtractor {
+    object Select extends SelectModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[(Term, String)] = x match {
         case x: tpd.Select if x.isType && x.qualifier.isTerm => Some(x.qualifier, x.name.toString)
         case _ => None
@@ -93,12 +151,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def ProjectDeco(x: Project): ProjectAPI = new ProjectAPI {
-      def qualifier(implicit ctx: Contexts.Context): TypeTree = x.qualifier
-      def name(implicit ctx: Contexts.Context): String = x.name.toString
-    }
-
-    object Project extends ProjectExtractor {
+    object Project extends ProjectModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[(TypeTree, String)] = x match {
         case x: tpd.Select if x.isType && x.qualifier.isType => Some(x.qualifier, x.name.toString)
         case _ => None
@@ -112,11 +165,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def SingletonDeco(x: Singleton): SingletonAPI = new SingletonAPI {
-      def ref(implicit ctx: Contexts.Context): Term = x.ref
-    }
-
-    object Singleton extends SingletonExtractor {
+    object Singleton extends SingletonModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[Term] = x match {
         case x: tpd.SingletonTypeTree => Some(x.ref)
         case _ => None
@@ -130,12 +179,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def RefinedDeco(x: Refined): RefinedAPI = new RefinedAPI {
-      def tpt(implicit ctx: Contexts.Context): TypeTree = x.tpt
-      def refinements(implicit ctx: Contexts.Context): List[Definition] = x.refinements
-    }
-
-    object Refined extends RefinedExtractor {
+    object Refined extends RefinedModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[(TypeTree, List[Definition])] = x match {
         case x: tpd.RefinedTypeTree => Some(x.tpt, x.refinements)
         case _ => None
@@ -149,12 +193,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def AppliedDeco(x: Applied): AppliedAPI = new AppliedAPI {
-      def tpt(implicit ctx: Contexts.Context): TypeTree = x.tpt
-      def args(implicit ctx: Contexts.Context): List[TypeOrBoundsTree] = x.args
-    }
-
-    object Applied extends AppliedExtractor {
+    object Applied extends AppliedModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[(TypeTree, List[TypeOrBoundsTree])] = x match {
         case x: tpd.AppliedTypeTree => Some(x.tpt, x.args)
         case _ => None
@@ -168,12 +207,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def AnnotatedDeco(x: Annotated): AnnotatedAPI = new AnnotatedAPI {
-      def arg(implicit ctx: Contexts.Context): TypeTree = x.arg
-      def annotation(implicit ctx: Contexts.Context): Term = x.annot
-    }
-
-    object Annotated extends AnnotatedExtractor {
+    object Annotated extends AnnotatedModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[(TypeTree, Term)] = x match {
         case x: tpd.Annotated => Some(x.arg, x.annot)
         case _ => None
@@ -187,12 +221,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def AndDeco(x: And): OrAPI = new OrAPI {
-      def left(implicit ctx: Contexts.Context): TypeTree = x.left
-      def right(implicit ctx: Contexts.Context): TypeTree = x.right
-    }
-
-    object And extends AndExtractor {
+    object And extends AndModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[(TypeTree, TypeTree)] = x match {
         case x: tpd.AndTypeTree => Some(x.left, x.right)
         case _ => None
@@ -206,12 +235,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def OrDeco(x: Or): OrAPI = new OrAPI {
-      def left(implicit ctx: Contexts.Context): TypeTree = x.left
-      def right(implicit ctx: Contexts.Context): TypeTree = x.right
-    }
-
-    object Or extends OrExtractor {
+    object Or extends OrModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[(TypeTree, TypeTree)] = x match {
         case x: tpd.OrTypeTree => Some(x.left, x.right)
         case _ => None
@@ -225,13 +249,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def MatchTypeDeco(x: MatchType): MatchTypeAPI = new MatchTypeAPI {
-      def bound(implicit ctx: Contexts.Context): Option[TypeTree] = if (x.bound == tpd.EmptyTree) None else Some(x.bound)
-      def selector(implicit ctx: Contexts.Context): TypeTree = x.selector
-      def cases(implicit ctx: Contexts.Context): List[CaseDef] = x.cases
-    }
-
-    object MatchType extends MatchTypeExtractor {
+    object MatchType extends MatchTypeModule {
       def unapply(x: TypeOrBoundsTree)(implicit ctx: Context): Option[(Option[TypeTree], TypeTree, List[CaseDef])] = x match {
         case x: tpd.MatchTypeTree => Some((if (x.bound == tpd.EmptyTree) None else Some(x.bound), x.selector, x.cases))
         case _ => None
@@ -245,11 +263,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def ByNameDeco(x: ByName): ByNameAPI = new ByNameAPI {
-      def result(implicit ctx: Contexts.Context): TypeTree = x.result
-    }
-
-    object ByName extends ByNameExtractor {
+    object ByName extends ByNameModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[TypeTree] = x match {
         case x: tpd.ByNameTypeTree => Some(x.result)
         case _ => None
@@ -263,12 +277,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def LambdaTypeTreeDeco(x: LambdaTypeTree): LambdaTypeTreeAPI = new LambdaTypeTreeAPI {
-      def tparams(implicit ctx: Contexts.Context): List[TypeDef] = x.tparams
-      def body(implicit ctx: Contexts.Context): TypeOrBoundsTree = x.body
-    }
-
-    object LambdaTypeTree extends LambdaTypeTreeExtractor {
+    object LambdaTypeTree extends LambdaTypeTreeModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[(List[TypeDef], TypeOrBoundsTree)] = x match {
         case Trees.LambdaTypeTree(tparams, body) => Some((tparams, body))
         case _ => None
@@ -282,12 +291,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def BindDeco(x: Bind): BindAPI = new BindAPI {
-      def name(implicit ctx: Contexts.Context): String = x.name.toString
-      def body(implicit ctx: Contexts.Context): TypeOrBoundsTree = x.body
-    }
-
-    object Bind extends BindExtractor {
+    object Bind extends BindModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[(String, TypeOrBoundsTree)] = x match {
         case x: tpd.Bind if x.name.isTypeName => Some((x.name.toString, x.body))
         case _ => None
@@ -301,12 +305,8 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
       }
     }
 
-    def BlockDeco(x: Block): BlockAPI = new BlockAPI {
-      def aliases(implicit ctx: Contexts.Context): List[TypeDef] = x.stats.map { case alias: TypeDef => alias }
-      def tpt(implicit ctx: Contexts.Context): TypeTree = x.expr
-    }
 
-    object Block extends BlockExtractor {
+    object Block extends BlockModule {
       def unapply(x: TypeTree)(implicit ctx: Context): Option[(List[TypeDef], TypeTree)] = x match {
         case x: tpd.Block => Some((x.stats.map { case alias: TypeDef => alias }, x.expr))
         case _ => None
@@ -322,7 +322,7 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
     def hi(implicit ctx: Context): TypeTree = bounds.hi
   }
 
-  object IsTypeBoundsTree extends IsTypeBoundsTreeExtractor {
+  object IsTypeBoundsTree extends IsTypeBoundsTreeModule {
     def unapply(x: TypeOrBoundsTree)(implicit ctx: Context): Option[TypeBoundsTree] = x match {
       case x: tpd.TypeBoundsTree => Some(x)
       case x @ Trees.TypeTree() =>
@@ -336,14 +336,14 @@ trait TypeOrBoundsTreesOpsImpl extends scala.tasty.reflect.TypeOrBoundsTreeOps w
     }
   }
 
-  object TypeBoundsTree extends TypeBoundsTreeExtractor {
+  object TypeBoundsTree extends TypeBoundsTreeModule {
     def unapply(x: TypeOrBoundsTree)(implicit ctx: Context): Option[(TypeTree, TypeTree)] = x match {
       case IsTypeBoundsTree(x) => Some((x.lo, x.hi))
       case _ => None
     }
   }
 
-  object WildcardTypeTree extends WildcardTypeTreeExtractor {
+  object WildcardTypeTree extends WildcardTypeTreeModule {
     def unapply(x: TypeOrBoundsTree)(implicit ctx: Context): Boolean = x match {
       case Trees.Ident(nme.WILDCARD) => x.tpe.isInstanceOf[Types.TypeBounds]
       case _ => false
