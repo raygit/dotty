@@ -37,7 +37,7 @@ object ExposedValues extends AutoPlugin {
 }
 
 object Build {
-  val scalacVersion = "2.12.7"
+  val scalacVersion = "2.12.8"
 
   val baseVersion = "0.12.0"
   val baseSbtDottyVersion = "0.2.7"
@@ -1032,7 +1032,7 @@ object Build {
     settings(commonSettings).
     settings(
       EclipseKeys.skipProject := true,
-      version := "0.1.12-snapshot", // Keep in sync with package.json
+      version := "0.1.13-snapshot", // Keep in sync with package.json
       autoScalaLibrary := false,
       publishArtifact := false,
       includeFilter in unmanagedSources := NothingFilter | "*.ts" | "**.json",
