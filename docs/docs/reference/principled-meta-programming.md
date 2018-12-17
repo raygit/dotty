@@ -29,8 +29,13 @@ prints it again in an error message if it evaluates to `false`.
     inline def assert(expr: => Boolean): Unit =
       ~ assertImpl('(expr))
 
-    def assertImpl(expr: Expr[Boolean]) =
-      '{ if !(~expr) then throw new AssertionError(s"failed assertion: ${~showExpr(expr)}") }
+    def assertImpl(expr: Expr[Boolean]) = '{
+      if !(~expr) then
+        throw new AssertionError(s"failed assertion: ${~showExpr(expr)}")
+    }
+
+    def showExpr(expr: Expr[Boolean]): Expr[String] =
+      '("<some source code>") // Better implementation later in this document
 
 If `e` is an expression, then `'(e)` or `'{e}` represent the typed
 abstract syntax tree representing `e`. If `T` is a type, then `'[T]`
@@ -125,26 +130,26 @@ PCP. This is explained further in a later section.
 
 ### From `Expr`s to Functions and Back
 
-The `Expr` companion object contains an "AsFunction" decorator that turns a tree
+The `Expr` companion object contains an `AsFunctionN` (for 0 <= N < 23) decorator that turns a tree
 describing a function into a function mapping trees to trees.
 
     object Expr {
       ...
-      implicit class AsFunction[T, U](f: Expr[T => U]) extends AnyVal {
+      implicit class AsFunction1[T, U](f: Expr[T => U]) extends AnyVal {
         def apply(x: Expr[T]): Expr[U] = ???
       }
     }
 
 This decorator gives `Expr` the `apply` operation of an applicative functor, where `Expr`s
 over function types can be applied to `Expr` arguments. The definition
-of `AsFunction(f).apply(x)` is assumed to be functionally the same as
+of `AsFunction1(f).apply(x)` is assumed to be functionally the same as
 `'((~f)(~x))`, however it should optimize this call by returning the
-result of beta-reducing `f(x)` if `f` is a known lambda expression
+result of beta-reducing `f(x)` if `f` is a known lambda expression.
 
-The `AsFunction` decorator distributes applications of `Expr` over function
+The `AsFunction1` decorator distributes applications of `Expr` over function
 arrows:
 
-    AsFunction(_).apply: Expr[S => T] => (Expr[S] => Expr[T])
+    AsFunction1(_).apply: Expr[S => T] => (Expr[S] => Expr[T])
 
 Its dual, let’s call it `reflect`, can be defined as follows:
 
@@ -587,9 +592,12 @@ analogue of lifting.
 
 Using lifting, we can now give the missing definition of `showExpr` in the introductory example:
 
-    def showExpr[T](expr: Expr[T]): Expr[String] = expr.toString
+    def showExpr[T](expr: Expr[T]): Expr[String] = {
+      val code = expr.show
+      code.toExpr
+    }
 
-That is, the `showExpr` method converts its `Expr` argument to a string, and lifts
+That is, the `showExpr` method converts its `Expr` argument to a string (`code`), and lifts
 the result back to an `Expr[String]` using the implicit `toExpr` conversion.
 
 ## Implementation
