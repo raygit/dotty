@@ -991,10 +991,15 @@ object SymDenotations {
      */
     final def companionModule(implicit ctx: Context): Symbol =
       if (is(Module)) sourceModule
-      else if (isOpaqueAlias)
-        info match {
-          case TypeAlias(TypeRef(prefix: TermRef, _)) => prefix.termSymbol
+      else if (isOpaqueAlias) {
+        def reference(tp: Type): TermRef = tp match {
+          case TypeRef(prefix: TermRef, _) => prefix
+          case tp: HKTypeLambda => reference(tp.resType)
+          case tp: AppliedType => reference(tp.tycon)
         }
+        val TypeAlias(alias) = info
+        reference(alias).termSymbol
+      }
       else registeredCompanion.sourceModule
 
     private def companionType(implicit ctx: Context): Symbol =
@@ -1120,10 +1125,10 @@ object SymDenotations {
     final def memberCanMatchInheritedSymbols(implicit ctx: Context): Boolean =
       !isConstructor && !is(Private)
 
-    /** The symbol, in class `inClass`, that is overridden by this denotation. */
-    final def overriddenSymbol(inClass: ClassSymbol)(implicit ctx: Context): Symbol =
+    /** The symbol, in class `inClass`, that is overridden by this denotation in class `siteClass`.*/
+    final def overriddenSymbol(inClass: ClassSymbol, siteClass: ClassSymbol = owner.asClass)(implicit ctx: Context): Symbol =
       if (!canMatchInheritedSymbols && (owner ne inClass)) NoSymbol
-      else matchingDecl(inClass, owner.thisType)
+      else matchingDecl(inClass, siteClass.thisType)
 
     /** All symbols overridden by this denotation. */
     final def allOverriddenSymbols(implicit ctx: Context): Iterator[Symbol] =
@@ -1137,7 +1142,7 @@ object SymDenotations {
 
     private def overriddenFromType(tp: Type)(implicit ctx: Context): Iterator[Symbol] =
       tp.baseClasses match {
-        case _ :: inherited => inherited.iterator map overriddenSymbol filter (_.exists)
+        case _ :: inherited => inherited.iterator.map(overriddenSymbol(_)).filter(_.exists)
         case Nil => Iterator.empty
       }
 
@@ -1837,16 +1842,22 @@ object SymDenotations {
     def computeMemberNames(keepOnly: NameFilter)(implicit onBehalf: MemberNames, ctx: Context): Set[Name] = {
       var names = Set[Name]()
       def maybeAdd(name: Name) = if (keepOnly(thisType, name)) names += name
-      for (p <- classParents)
-        for (name <- p.classSymbol.asClass.memberNames(keepOnly))
-          maybeAdd(name)
-      val ownSyms =
-        if (keepOnly eq implicitFilter)
-          if (this is Package) Iterator.empty
-          else info.decls.iterator filter (_ is Implicit)
-        else info.decls.iterator
-      for (sym <- ownSyms) maybeAdd(sym.name)
-      names
+      try {
+        for (p <- classParents)
+          for (name <- p.classSymbol.asClass.memberNames(keepOnly))
+            maybeAdd(name)
+        val ownSyms =
+          if (keepOnly eq implicitFilter)
+            if (this is Package) Iterator.empty
+            else info.decls.iterator filter (_ is Implicit)
+          else info.decls.iterator
+        for (sym <- ownSyms) maybeAdd(sym.name)
+        names
+      }
+      catch {
+        case ex: Throwable =>
+          handleRecursive("member names", i"of $this", ex)
+      }
     }
 
     override final def fullNameSeparated(kind: QualifiedNameKind)(implicit ctx: Context): Name = {

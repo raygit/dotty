@@ -694,7 +694,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
       	 */
         def newBinding(sym: TermSymbol, rhs: Tree): Unit = {
           sym.info = rhs.tpe.widenTermRefExpr
-          bindingsBuf += ValDef(sym, constToLiteral(rhs))
+          bindingsBuf += ValDef(sym, constToLiteral(rhs)).withPos(sym.pos)
         }
 
         def searchImplicit(sym: TermSymbol, tpt: Tree) = {
@@ -735,7 +735,11 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
                 for (tpt <- tpts) boundVars = getBoundVars(boundVars, tpt)
               case _ =>
             }
-            for (bv <- boundVars) ctx.gadt.setBounds(bv, bv.info.bounds)
+            for (bv <- boundVars) {
+              val TypeBounds(lo, hi) = bv.info.bounds
+              ctx.gadt.addBound(bv, lo, isUpper = false)
+              ctx.gadt.addBound(bv, hi, isUpper = true)
+            }
             scrut <:< tpt.tpe && {
               for (bv <- boundVars) {
                 bv.info = TypeAlias(ctx.gadt.bounds(bv).lo)
@@ -950,13 +954,18 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
       override def traverse(t: Tree)(implicit ctx: Context) = {
         def updateRefCount(sym: Symbol, inc: Int) =
           for (x <- refCount.get(sym)) refCount(sym) = x + inc
+        def updateTermRefCounts(t: Tree) =
+          t.typeOpt.foreachPart {
+            case ref: TermRef => updateRefCount(ref.symbol, 2) // can't be inlined, so make sure refCount is at least 2
+            case _ =>
+          }
+
         t match {
-          case t: RefTree => updateRefCount(t.symbol, 1)
+          case t: RefTree =>
+            updateRefCount(t.symbol, 1)
+            updateTermRefCounts(t)
           case _: New | _: TypeTree =>
-            t.typeOpt.foreachPart {
-              case ref: TermRef => updateRefCount(ref.symbol, 2) // can't be inlined, so make sure refCount is at least 2
-              case _ =>
-            }
+            updateTermRefCounts(t)
           case _ =>
         }
         traverseChildren(t)

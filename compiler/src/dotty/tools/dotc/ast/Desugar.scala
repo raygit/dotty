@@ -457,7 +457,7 @@ object desugar {
         DefDef(name, Nil, Nil, tpt, rhs).withMods(synthetic)
       def productElemMeths = {
         val caseParams = derivedVparamss.head.toArray
-        for (i <- 0 until arity if nme.selectorName(i) `ne` caseParams(i).name)
+        for (i <- List.range(0, arity) if nme.selectorName(i) `ne` caseParams(i).name)
         yield syntheticProperty(nme.selectorName(i), caseParams(i).tpt,
           Select(This(EmptyTypeIdent), caseParams(i).name))
       }
@@ -484,8 +484,26 @@ object desugar {
         }
       }
 
+      // TODO When the Scala library is updated to 2.13.x add the override keyword to this generated method.
+      // (because Product.scala was updated)
+      def productElemNameMeth = {
+        val methodParam = makeSyntheticParameter(tpt = scalaDot(tpnme.Int))
+        val paramRef = Ident(methodParam.name)
+
+        val indexAsString = Apply(Select(javaDotLangDot(nme.String), nme.valueOf), paramRef)
+        val throwOutOfBound = Throw(New(javaDotLangDot(tpnme.IOOBException), List(List(indexAsString))))
+        val defaultCase = CaseDef(Ident(nme.WILDCARD), EmptyTree, throwOutOfBound)
+
+        val patternMatchCases = derivedVparamss.head.zipWithIndex.map { case (param, idx) =>
+            CaseDef(Literal(Constant(idx)), EmptyTree, Literal(Constant(param.name.decode.toString)))
+        } :+ defaultCase
+        val body = Match(paramRef, patternMatchCases)
+        DefDef(nme.productElementName, Nil, List(List(methodParam)), javaDotLangDot(tpnme.String), body)
+          .withFlags(if (defn.isNewCollections) Override | Synthetic else Synthetic)
+      }
+
       if (isCaseClass)
-        copyMeths ::: enumTagMeths ::: productElemMeths.toList
+        productElemNameMeth :: copyMeths ::: enumTagMeths ::: productElemMeths
       else Nil
     }
 
@@ -902,8 +920,9 @@ object desugar {
     assert(arity <= Definitions.MaxTupleArity)
     def tupleTypeRef = defn.TupleType(arity)
     if (arity == 1) ts.head
+    else if (arity == 0)
+      if (ctx.mode is Mode.Type) TypeTree(defn.UnitType) else unitLiteral
     else if (ctx.mode is Mode.Type) AppliedTypeTree(ref(tupleTypeRef), ts)
-    else if (arity == 0) unitLiteral
     else Apply(ref(tupleTypeRef.classSymbol.companionModule.termRef), ts)
   }
 

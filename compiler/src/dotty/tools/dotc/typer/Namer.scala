@@ -1157,7 +1157,9 @@ class Namer { typer: Typer =>
       case TypeTree() =>
         checkMembersOK(inferredType, mdef.pos)
       case DependentTypeTree(tpFun) =>
-        tpFun(paramss.head)
+        val tpe = tpFun(paramss.head)
+        if (isFullyDefined(tpe, ForceDegree.none)) tpe
+        else typedAheadExpr(mdef.rhs, tpe).tpe
       case TypedSplice(tpt: TypeTree) if !isFullyDefined(tpt.tpe, ForceDegree.none) =>
         val rhsType = typedAheadExpr(mdef.rhs, tpt.tpe).tpe
         mdef match {
@@ -1227,8 +1229,8 @@ class Namer { typer: Typer =>
 
   def typeDefSig(tdef: TypeDef, sym: Symbol, tparamSyms: List[TypeSymbol])(implicit ctx: Context): Type = {
     def abstracted(tp: Type): Type = HKTypeLambda.fromParams(tparamSyms, tp)
-    val dummyInfo = abstracted(TypeBounds.empty)
-    sym.info = dummyInfo
+    val dummyInfo1 = abstracted(TypeBounds.empty)
+    sym.info = dummyInfo1
     sym.setFlag(Provisional)
       // Temporarily set info of defined type T to ` >: Nothing <: Any.
       // This is done to avoid cyclic reference errors for F-bounds.
@@ -1246,6 +1248,16 @@ class Namer { typer: Typer =>
       case LambdaTypeTree(_, body) => body
       case rhs => rhs
     }
+
+    // For match types: approximate with upper bound while evaluating the rhs.
+    val dummyInfo2 = rhs match {
+      case MatchTypeTree(bound, _, _) if !bound.isEmpty =>
+        abstracted(TypeBounds.upper(typedAheadType(bound).tpe))
+      case _ =>
+        dummyInfo1
+    }
+    sym.info = dummyInfo2
+
     val rhsBodyType = typedAheadType(rhs).tpe
     val rhsType = if (isDerived) rhsBodyType else abstracted(rhsBodyType)
     val unsafeInfo = rhsType.toBounds
@@ -1266,7 +1278,8 @@ class Namer { typer: Typer =>
       case _ =>
     }
     sym.normalizeOpaque()
-    ensureUpToDate(sym.typeRef, dummyInfo)
+    ensureUpToDate(sym.typeRef, dummyInfo1)
+    if (dummyInfo2 `ne` dummyInfo1) ensureUpToDate(sym.typeRef, dummyInfo2)
     ensureUpToDate(sym.typeRef.appliedTo(tparamSyms.map(_.typeRef)), TypeBounds.empty)
     sym.info
   }

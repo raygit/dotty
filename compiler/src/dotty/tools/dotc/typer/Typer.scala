@@ -27,6 +27,7 @@ import EtaExpansion.etaExpand
 import util.Positions._
 import util.common._
 import util.Property
+import Applications.{ExtMethodApply, wrapDefs, productSelectorTypes}
 
 import collection.mutable
 import annotation.tailrec
@@ -426,7 +427,7 @@ class Typer extends Namer
 
     def typeSelectOnTerm(implicit ctx: Context): Tree =
       typedExpr(tree.qualifier, selectionProto(tree.name, pt, this)) match {
-        case qual1 @ Applications.ExtMethodApply(app) =>
+        case qual1 @ ExtMethodApply(app) =>
           pt.revealIgnored match {
             case _: PolyProto => qual1 // keep the ExtMethodApply to strip at next typedTypeApply
             case _ => app
@@ -801,10 +802,10 @@ class Typer extends Namer
       val typeArgs = params1.map(_.tpt) :+ resTpt
       val tycon = TypeTree(funCls.typeRef)
       val core = assignType(cpy.AppliedTypeTree(tree)(tycon, typeArgs), tycon, typeArgs)
-      val appMeth = ctx.newSymbol(ctx.owner, nme.apply, Synthetic | Deferred, mt)
+      val appMeth = ctx.newSymbol(ctx.owner, nme.apply, Synthetic | Method | Deferred, mt, coord = body.pos)
       val appDef = assignType(
         untpd.DefDef(appMeth.name, Nil, List(params1), resultTpt, EmptyTree),
-        appMeth)
+        appMeth).withPos(body.pos)
       RefinedTypeTree(core, List(appDef), ctx.owner.asClass)
     }
 
@@ -926,7 +927,7 @@ class Typer extends Namer
     def ptIsCorrectProduct(formal: Type) = {
       isFullyDefined(formal, ForceDegree.noBottom) &&
       (defn.isProductSubType(formal) || formal.derivesFrom(defn.PairClass)) &&
-      Applications.productSelectorTypes(formal).corresponds(params) {
+      productSelectorTypes(formal).corresponds(params) {
         (argType, param) =>
           param.tpt.isEmpty || argType <:< typedAheadType(param.tpt).tpe
       }
@@ -1040,8 +1041,7 @@ class Typer extends Namer
   def gadtContext(gadtSyms: Set[Symbol])(implicit ctx: Context): Context = {
     val gadtCtx = ctx.fresh.setFreshGADTBounds
     for (sym <- gadtSyms)
-      if (!gadtCtx.gadt.bounds.contains(sym))
-        gadtCtx.gadt.setBounds(sym, TypeBounds.empty)
+      if (!gadtCtx.gadt.contains(sym)) gadtCtx.gadt.addEmptyBounds(sym)
     gadtCtx
   }
 
@@ -1233,7 +1233,9 @@ class Typer extends Namer
         }
       case _ =>
         tree.withType(
-          if (isFullyDefined(pt, ForceDegree.none)) pt else UnspecifiedErrorType)
+          if (isFullyDefined(pt, ForceDegree.noBottom)) pt
+          else if (ctx.reporter.errorsReported) UnspecifiedErrorType
+          else errorType(i"cannot infer type; expected type $pt is not fully defined", tree.pos))
     }
   }
 
@@ -1518,8 +1520,11 @@ class Typer extends Namer
       // that their type parameters are aliases of the class type parameters.
       // See pos/i941.scala
       rhsCtx = ctx.fresh.setFreshGADTBounds
-      (tparams1, sym.owner.typeParams).zipped.foreach ((tdef, tparam) =>
-        rhsCtx.gadt.setBounds(tdef.symbol, TypeAlias(tparam.typeRef)))
+      (tparams1, sym.owner.typeParams).zipped.foreach { (tdef, tparam) =>
+        val tr = tparam.typeRef
+        rhsCtx.gadt.addBound(tdef.symbol, tr, isUpper = false)
+        rhsCtx.gadt.addBound(tdef.symbol, tr, isUpper = true)
+      }
     }
     if (sym.isInlineMethod) rhsCtx = rhsCtx.addMode(Mode.InlineableBody)
     val rhs1 = typedExpr(ddef.rhs, tpt1.tpe)(rhsCtx)
@@ -1837,7 +1842,7 @@ class Typer extends Namer
         case Block(stats, expr) =>
           tpd.cpy.Block(app)(stats, lift(expr))
       }
-      Applications.wrapDefs(defs, lift(app))
+      wrapDefs(defs, lift(app))
     }
   }
 
@@ -2640,7 +2645,9 @@ class Typer extends Namer
           val app = tryExtension(nestedCtx)
           if (!app.isEmpty && !nestedCtx.reporter.hasErrors) {
             nestedCtx.typerState.commit()
-            return Applications.ExtMethodApply(app).withType(app.tpe)
+            return ExtMethodApply(app).withType(WildcardType)
+              // Use wildcard type in order not to prompt any further adaptations such as eta expansion
+              // before the method is fully applied.
           }
         case _ =>
       }
@@ -2652,7 +2659,7 @@ class Typer extends Namer
         else err.typeMismatch(tree, pt, failure)
       if (ctx.mode.is(Mode.ImplicitsEnabled) && tree.typeOpt.isValueType)
         inferView(tree, pt) match {
-          case SearchSuccess(inferred: Applications.ExtMethodApply, _, _) =>
+          case SearchSuccess(inferred: ExtMethodApply, _, _) =>
             inferred // nothing to check or adapt for extension method applications
           case SearchSuccess(inferred, _, _) =>
             checkImplicitConversionUseOK(inferred.symbol, tree.pos)
@@ -2732,7 +2739,7 @@ class Typer extends Namer
               adaptToArgs(wtp, pt)
             case pt: PolyProto =>
               tree match {
-                case _: Applications.ExtMethodApply => tree
+                case _: ExtMethodApply => tree
                 case _ =>  tryInsertApplyOrImplicit(tree, pt, locked)(tree) // error will be reported in typedTypeApply
               }
             case _ =>

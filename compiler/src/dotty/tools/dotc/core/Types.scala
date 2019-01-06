@@ -563,7 +563,7 @@ object Types {
             case _ =>
               go(tp.superType)
           }
-        case tp: ThisType =>
+        case tp: ThisType => // ??? inline
           goThis(tp)
         case tp: RefinedType =>
           if (name eq tp.refinedName) goRefined(tp) else go(tp.parent)
@@ -641,9 +641,7 @@ object Types {
         val rinfo = tp.refinedInfo
         if (name.isTypeName && !pinfo.isInstanceOf[ClassInfo]) { // simplified case that runs more efficiently
           val jointInfo =
-            if (rinfo.isTypeAlias) rinfo
-            else if (pinfo.isTypeAlias) pinfo
-            else if (ctx.base.pendingMemberSearches.contains(name)) pinfo safe_& rinfo
+            if (ctx.base.pendingMemberSearches.contains(name)) pinfo safe_& rinfo
             else pinfo recoverable_& rinfo
           pdenot.asSingleDenotation.derivedSingleDenotation(pdenot.symbol, jointInfo)
         } else {
@@ -1916,8 +1914,6 @@ object Types {
       setDenot(memberDenot(name, allowPrivate = !symbol.exists || symbol.is(Private)))
 
     private def setDenot(denot: Denotation)(implicit ctx: Context): Unit = {
-      if (ctx.isAfterTyper)
-        assert(!denot.isOverloaded || ctx.mode.is(Mode.Printing), this)
       if (Config.checkNoDoubleBindings)
         if (ctx.settings.YnoDoubleBindings.value)
           checkSymAssign(denot.symbol)
@@ -3624,7 +3620,7 @@ object Types {
     private[core] def inst: Type = myInst
     private[core] def inst_=(tp: Type): Unit = {
       myInst = tp
-      if (tp.exists) {
+      if (tp.exists && (owningState ne null)) {
         owningState.get.ownedVars -= this
         owningState = null // no longer needed; null out to avoid a memory leak
       }
@@ -3633,13 +3629,14 @@ object Types {
     /** The state owning the variable. This is at first `creatorState`, but it can
      *  be changed to an enclosing state on a commit.
      */
-    private[core] var owningState: WeakReference[TyperState] = new WeakReference(creatorState)
+    private[core] var owningState: WeakReference[TyperState] =
+      if (creatorState == null) null else new WeakReference(creatorState)
 
     /** The instance type of this variable, or NoType if the variable is currently
      *  uninstantiated
      */
     def instanceOpt(implicit ctx: Context): Type =
-      if (inst.exists) inst else ctx.typerState.instType(this)
+      if (inst.exists) inst else ctx.typeComparer.instType(this)
 
     /** Is the variable already instantiated? */
     def isInstantiated(implicit ctx: Context): Boolean = instanceOpt.exists
@@ -3756,7 +3753,7 @@ object Types {
 
       def isBounded(tp: Type) = tp match {
         case tp: TypeParamRef =>
-        case tp: TypeRef => ctx.gadt.bounds.contains(tp.symbol)
+        case tp: TypeRef => ctx.gadt.contains(tp.symbol)
       }
 
       def contextInfo(tp: Type): Type = tp match {
