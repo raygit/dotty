@@ -80,7 +80,7 @@ class Definitions {
         denot.info = ClassInfo(ScalaPackageClass.thisType, cls, parents, paramDecls)
       }
     }
-    newClassSymbol(ScalaPackageClass, name, EmptyFlags, completer).entered
+    newClassSymbol(ScalaPackageClass, name, Artifact, completer).entered
   }
 
   /** The trait FunctionN, ImplicitFunctionN, ErasedFunctionN or ErasedImplicitFunction, for some N
@@ -716,6 +716,9 @@ class Definitions {
 
     def Not_value(implicit ctx: Context): TermSymbol = NotModule.requiredMethod(nme.value)
 
+  lazy val ValueOfType: TypeRef = ctx.requiredClassRef("scala.ValueOf")
+  def ValueOfClass(implicit ctx: Context): ClassSymbol = ValueOfType.symbol.asClass
+
   lazy val XMLTopScopeModuleRef: TermRef = ctx.requiredModuleRef("scala.xml.TopScope")
 
   lazy val TupleTypeRef: TypeRef = ctx.requiredClassRef("scala.Tuple")
@@ -813,6 +816,8 @@ class Definitions {
   def SetterMetaAnnot(implicit ctx: Context): ClassSymbol = SetterMetaAnnotType.symbol.asClass
   lazy val ShowAsInfixAnotType: TypeRef = ctx.requiredClassRef("scala.annotation.showAsInfix")
   def ShowAsInfixAnnot(implicit ctx: Context): ClassSymbol = ShowAsInfixAnotType.symbol.asClass
+  lazy val FunctionalInterfaceAnnotType = ctx.requiredClassRef("java.lang.FunctionalInterface")
+  def FunctionalInterfaceAnnot(implicit ctx: Context) = FunctionalInterfaceAnnotType.symbol.asClass
 
   // convenient one-parameter method types
   def methOfAny(tp: Type): MethodType = MethodType(List(AnyType), tp)

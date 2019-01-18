@@ -105,6 +105,13 @@ object Parsers {
     def sourcePos(off: Int = in.offset): SourcePosition =
       source atPos Position(off)
 
+    /** in.offset, except if this is at a new line, in which case `lastOffset` is preferred. */
+    def expectedOffset: Int = {
+      val current = sourcePos(in.offset)
+      val last = sourcePos(in.lastOffset)
+      if (current.line != last.line) in.lastOffset else in.offset
+    }
+
     /* ------------- ERROR HANDLING ------------------------------------------- */
     /** The offset where the last syntax error was reported, or if a skip to a
       *  safepoint occurred afterwards, the offset of the safe point.
@@ -116,7 +123,7 @@ object Parsers {
       */
     def syntaxError(msg: => Message, offset: Int = in.offset): Unit =
       if (offset > lastErrorOffset) {
-        val length = if (in.name != null) in.name.show.length else 0
+        val length = if (offset == in.offset && in.name != null) in.name.show.length else 0
         syntaxError(msg, Position(offset, offset + length))
         lastErrorOffset = in.offset
       }
@@ -275,13 +282,13 @@ object Parsers {
     /** If at end of file, issue an incompleteInputError.
      *  Otherwise issue a syntax error and skip to next safe point.
      */
-    def syntaxErrorOrIncomplete(msg: => Message): Unit =
+    def syntaxErrorOrIncomplete(msg: => Message, offset: Int = in.offset): Unit =
       if (in.token == EOF) incompleteInputError(msg)
       else {
-        syntaxError(msg)
+        syntaxError(msg, offset)
         skip()
         lastErrorOffset = in.offset
-      } // DEBUG
+      }
 
     /** Consume one token of the specified type, or
       * signal an error if it is not there.
@@ -659,7 +666,15 @@ object Parsers {
       }
       val isNegated = negOffset < in.offset
       atPos(negOffset) {
-        if (in.token == SYMBOLLIT) atPos(in.skipToken()) { SymbolLit(in.strVal) }
+        if (in.token == SYMBOLLIT) {
+          migrationWarningOrError(em"""symbol literal '${in.name} is no longer supported,
+                                      |use a string literal "${in.name}" or an application Symbol("${in.name}") instead.""")
+          if (in.isScala2Mode) {
+            patch(source, Position(in.offset, in.offset + 1), "Symbol(\"")
+            patch(source, Position(in.charOffset - 1), "\")")
+          }
+          atPos(in.skipToken()) { SymbolLit(in.strVal) }
+        }
         else if (in.token == INTERPOLATIONID) interpolatedString(inPattern)
         else finish(in.token match {
           case CHARLIT                => in.charVal
@@ -1448,7 +1463,7 @@ object Parsers {
         case _ =>
           if (isLiteral) literal()
           else {
-            syntaxErrorOrIncomplete(IllegalStartSimpleExpr(tokenString(in.token)))
+            syntaxErrorOrIncomplete(IllegalStartSimpleExpr(tokenString(in.token)), expectedOffset)
             errorTermTree
           }
       }
@@ -1691,8 +1706,8 @@ object Parsers {
           case pt @ Ident(tpnme.WILDCARD_STAR) =>
             migrationWarningOrError("The syntax `x @ _*' is no longer supported; use `x : _*' instead", startOffset(p))
             atPos(startOffset(p), offset) { Typed(p, pt) }
-          case p =>
-            atPos(startOffset(p), offset) { Bind(name, p) }
+          case pt =>
+            atPos(startOffset(p), 0) { Bind(name, pt) }
         }
       case p @ Ident(tpnme.WILDCARD_STAR) =>
         // compatibility for Scala2 `_*` syntax
@@ -1740,7 +1755,7 @@ object Parsers {
       case _ =>
         if (isLiteral) literal(inPattern = true)
         else {
-          syntaxErrorOrIncomplete(IllegalStartOfSimplePattern())
+          syntaxErrorOrIncomplete(IllegalStartOfSimplePattern(), expectedOffset)
           errorTermTree
         }
     }
@@ -2407,6 +2422,16 @@ object Parsers {
 
     def objectDefRest(start: Offset, mods: Modifiers, name: TermName): ModuleDef = {
       val template = templateOpt(emptyConstructor)
+
+      def flagPos(flag: FlagSet) = mods.mods.find(_.flags == flag).get.pos
+      if (mods is Abstract)
+        syntaxError(hl"""${Abstract} modifier cannot be used for objects""", flagPos(Abstract))
+      if (mods is Sealed)
+        syntaxError(hl"""${Sealed} modifier is redundant for objects""", flagPos(Sealed))
+      // Maybe this should be an error; see https://github.com/scala/bug/issues/11094.
+      if (mods is Final)
+        warning(hl"""${Final} modifier is redundant for objects""", source atPos flagPos(Final))
+
       finalizeDef(ModuleDef(name, template), mods, start)
     }
 
