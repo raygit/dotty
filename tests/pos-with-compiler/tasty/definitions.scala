@@ -343,12 +343,12 @@ abstract class Tasty {
 }
 
 // The concrete implementation - hidden from users.
-object TastyImpl extends Tasty {
+object ReflectionImpl extends Tasty {
   import definitions._
   import dotty.tools.dotc._
   import ast.tpd
   import core.{Types, Symbols, Contexts}
-  import util.{Positions}
+  import util.Spans
 
   type Type = Types.Type
   implicit class TypeDeco(x: Type) extends TypeAPI {}
@@ -361,7 +361,7 @@ object TastyImpl extends Tasty {
     val owner = c.owner
   }
 
-  type Position = Positions.Position
+  type Position = Spans.Span
   implicit class PositionDeco(p: Position) extends PositionAPI {
     val start = p.start
     val end = p.end
@@ -369,19 +369,19 @@ object TastyImpl extends Tasty {
 
   type Pattern = tpd.Tree
   implicit class PatternDeco(p: Pattern) extends TypedPositioned {
-    val pos = p.pos
+    val pos = p.span
     val tpe = p.tpe
   }
 
   type Term = tpd.Tree
   implicit class TermDeco(t: Term) extends TypedPositioned {
-    val pos = t.pos
+    val pos = t.span
     val tpe = t.tpe
   }
 
   type CaseDef = tpd.CaseDef
   implicit class CaseDefDeco(c: CaseDef) extends TypedPositioned {
-    val pos = c.pos
+    val pos = c.span
     val tpe = c.tpe
   }
 
@@ -399,7 +399,7 @@ object TastyImpl extends Tasty {
 
       val tasty: Tasty
 
-    this val is implemented reflectively, loading TastyImpl on demand. TastyImpl in turn
+    this val is implemented reflectively, loading ReflectionImpl on demand. ReflectionImpl in turn
     depends on `tools.dotc`.
 
 */
@@ -411,7 +411,7 @@ object TastyImpl extends Tasty {
    This still does full information hiding, but should be almost
    as fast as native access.
 
-object TastyImpl extends TastyAST {
+object ReflectionImpl extends TastyAST {
   import definitions._
   import dotty.tools.dotc._
   import ast.tpd

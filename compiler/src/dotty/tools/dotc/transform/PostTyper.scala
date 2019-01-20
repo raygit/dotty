@@ -4,7 +4,9 @@ package transform
 import dotty.tools.dotc.ast.{Trees, tpd, untpd}
 import scala.collection.mutable
 import core._
-import typer.{Checking, VarianceChecker}
+import dotty.tools.dotc.typer.Checking
+import dotty.tools.dotc.typer.Inliner
+import dotty.tools.dotc.typer.VarianceChecker
 import Types._, Contexts._, Names._, Flags._, DenotTransformers._, Phases._
 import SymDenotations._, StdNames._, Annotations._, Trees._, Scopes._
 import Decorators._
@@ -40,7 +42,8 @@ object PostTyper {
  *
  *  (10) Adds Child annotations to all sealed classes
  *
- *  (11) Replace RHS of `erased` (but not `inline`) members by `(???: rhs.type)`
+ *  (11) Minimizes `call` fields of `Inlined` nodes to just point to the toplevel
+ *       class from which code was inlined.
  *
  *  The reason for making this a macro transform is that some functions (in particular
  *  super and protected accessors and instantiation checks) are naturally top-down and
@@ -102,7 +105,6 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
 
     private def processMemberDef(tree: Tree)(implicit ctx: Context): tree.type = {
       val sym = tree.symbol
-      sym.registerIfChild()
       sym.transformAnnotations(transformAnnot)
       sym.defTree = tree
       tree
@@ -151,7 +153,7 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
           case tp: PolyType if args.exists(isNamedArg) =>
             val (namedArgs, otherArgs) = args.partition(isNamedArg)
             val args1 = reorderArgs(tp.paramNames, namedArgs.asInstanceOf[List[NamedArg]], otherArgs)
-            TypeApply(tycon, args1).withPos(tree.pos).withType(tree.tpe)
+            TypeApply(tycon, args1).withSpan(tree.span).withType(tree.tpe)
           case _ =>
             tree
         }
@@ -177,52 +179,51 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
       }
     }
 
-    private def handleInlineCall(sym: Symbol)(implicit ctx: Context): Unit = {
-      if (sym.is(Inline))
-        ctx.compilationUnit.needsStaging = true
+    private object dropInlines extends TreeMap {
+      override def transform(tree: Tree)(implicit ctx: Context): Tree = tree match {
+        case Inlined(call, _, _) =>
+          cpy.Inlined(tree)(call, Nil, Typed(ref(defn.Predef_undefined), TypeTree(tree.tpe)))
+        case _ => super.transform(tree)
+      }
     }
 
     override def transform(tree: Tree)(implicit ctx: Context): Tree =
       try tree match {
         case tree: Ident if !tree.isType =>
-          handleInlineCall(tree.symbol)
           handleMeta(tree.symbol)
           tree.tpe match {
-            case tpe: ThisType => This(tpe.cls).withPos(tree.pos)
+            case tpe: ThisType => This(tpe.cls).withSpan(tree.span)
             case _ => tree
           }
         case tree @ Select(qual, name) =>
-          handleInlineCall(tree.symbol)
           handleMeta(tree.symbol)
           if (name.isTypeName) {
-            Checking.checkRealizable(qual.tpe, qual.pos.focus)
+            Checking.checkRealizable(qual.tpe, qual.posd)
             super.transform(tree)(ctx.addMode(Mode.Type))
           }
           else
             transformSelect(tree, Nil)
         case tree: Apply =>
-          handleInlineCall(tree.symbol)
           val methType = tree.fun.tpe.widen
           val app =
             if (methType.isErasedMethod)
               tpd.cpy.Apply(tree)(
                 tree.fun,
-                tree.args.map(arg =>
-                  if (methType.isImplicitMethod && arg.pos.isSynthetic) ref(defn.Predef_undefined)
-                  else arg))
+                tree.args.mapConserve(arg =>
+                  if (methType.isImplicitMethod && arg.span.isSynthetic) ref(defn.Predef_undefined)
+                  else dropInlines.transform(arg)))
             else
               tree
           methPart(app) match {
             case Select(nu: New, nme.CONSTRUCTOR) if isCheckable(nu) =>
               // need to check instantiability here, because the type of the New itself
               // might be a type constructor.
-              Checking.checkInstantiable(tree.tpe, nu.pos)
+              Checking.checkInstantiable(tree.tpe, nu.posd)
               withNoCheckNews(nu :: Nil)(super.transform(app))
             case _ =>
               super.transform(app)
           }
         case tree: TypeApply =>
-          handleInlineCall(tree.symbol)
           val tree1 @ TypeApply(fn, args) = normalizeTypeArgs(tree)
           if (fn.symbol != defn.ChildAnnot.primaryConstructor) {
             // Make an exception for ChildAnnot, which should really have AnyKind bounds
@@ -236,6 +237,9 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
             case _ =>
               super.transform(tree1)
           }
+        case Inlined(call, bindings, expansion) if !call.isEmpty =>
+          val callTrace = Inliner.inlineCallTrace(call.symbol, call.sourcePos)
+          cpy.Inlined(tree)(callTrace, transformSub(bindings), transform(expansion)(inlineContext(call)))
         case tree: Template =>
           withNoCheckNews(tree.parents.flatMap(newPart)) {
             val templ1 = paramFwd.forwardParamAccessors(tree)
@@ -261,7 +265,10 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
           }
           processMemberDef(super.transform(tree))
         case tree: New if isCheckable(tree) =>
-          Checking.checkInstantiable(tree.tpe, tree.pos)
+          Checking.checkInstantiable(tree.tpe, tree.posd)
+          super.transform(tree)
+        case tree: Closure if !tree.tpt.isEmpty =>
+          Checking.checkRealizable(tree.tpt.tpe, tree.posd, "SAM type")
           super.transform(tree)
         case tree @ Annotated(annotated, annot) =>
           cpy.Annotated(tree)(transform(annotated), transformAnnot(annot))
@@ -269,7 +276,7 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
           Checking.checkAppliedType(tree, boundsCheck = !ctx.mode.is(Mode.Pattern))
           super.transform(tree)
         case SingletonTypeTree(ref) =>
-          Checking.checkRealizable(ref.tpe, ref.pos.focus)
+          Checking.checkRealizable(ref.tpe, ref.posd)
           super.transform(tree)
         case tree: TypeTree =>
           tree.withType(
@@ -281,7 +288,7 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
         case tree: AndTypeTree =>
           // Ideally, this should be done by Typer, but we run into cyclic references
           // when trying to typecheck self types which are intersections.
-          Checking.checkNonCyclicInherited(tree.tpe, tree.left.tpe :: tree.right.tpe :: Nil, EmptyScope, tree.pos)
+          Checking.checkNonCyclicInherited(tree.tpe, tree.left.tpe :: tree.right.tpe :: Nil, EmptyScope, tree.posd)
           super.transform(tree)
         case tree: LambdaTypeTree =>
           VarianceChecker.checkLambda(tree)
@@ -292,9 +299,9 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
           def checkIdent(ident: untpd.Ident): Unit = {
             val name = ident.name.asTermName
             if (name != nme.WILDCARD && !exprTpe.member(name).exists && !exprTpe.member(name.toTypeName).exists)
-              ctx.error(NotAMember(exprTpe, name, "value"), ident.pos)
+              ctx.error(NotAMember(exprTpe, name, "value"), ident.sourcePos)
             if (seen(ident.name))
-              ctx.error(ImportRenamedTwice(ident), ident.pos)
+              ctx.error(ImportRenamedTwice(ident), ident.sourcePos)
             seen += ident.name
           }
           selectors.foreach {
@@ -322,10 +329,9 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
       }
 
     /** Transforms the rhs tree into a its default tree if it is in an `erased` val/def.
-     *  Performed to shrink the tree that is known to be erased later.
-     */
+    *  Performed to shrink the tree that is known to be erased later.
+    */
     private def normalizeErasedRhs(rhs: Tree, sym: Symbol)(implicit ctx: Context) =
-      if (!sym.isEffectivelyErased || sym.isInlineMethod || !rhs.tpe.exists) rhs
-      else Typed(ref(defn.Predef_undefined), TypeTree(rhs.tpe))
+      if (sym.isEffectivelyErased) dropInlines.transform(rhs) else rhs
   }
 }

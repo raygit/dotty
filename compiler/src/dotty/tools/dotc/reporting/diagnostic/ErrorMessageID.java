@@ -140,7 +140,10 @@ public enum ErrorMessageID {
     TraitCompanionWithMutableStaticID,
     LazyStaticFieldID,
     StaticOverridingNonStaticMembersID,
-    OverloadInRefinementID
+    OverloadInRefinementID,
+    NoMatchingOverloadID,
+    StableIdentPatternID,
+    StaticFieldsShouldPrecedeNonStaticID
     ;
 
     public int errorNumber() {

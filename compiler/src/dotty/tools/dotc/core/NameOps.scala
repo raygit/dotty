@@ -4,13 +4,13 @@ package core
 import java.security.MessageDigest
 import scala.io.Codec
 import Names._, StdNames._, Contexts._, Symbols._, Flags._, NameKinds._, Types._
-import util.Chars
+import scala.tasty.util.Chars
 import Chars.isOperatorPart
 import Definitions._
 
 object NameOps {
 
-  final object compactify {
+  object compactify {
     lazy val md5: MessageDigest = MessageDigest.getInstance("MD5")
 
     /** COMPACTIFY

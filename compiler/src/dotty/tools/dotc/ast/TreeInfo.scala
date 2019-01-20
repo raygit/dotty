@@ -5,7 +5,7 @@ package ast
 import core._
 import Flags._, Trees._, Types._, Contexts._
 import Names._, StdNames._, NameOps._, Symbols._
-import typer.{ConstFold, Inliner}
+import typer.ConstFold
 import reporting.trace
 
 import scala.annotation.tailrec
@@ -399,11 +399,13 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
     case Apply(fn, args) =>
       def isKnownPureOp(sym: Symbol) =
         sym.owner.isPrimitiveValueClass || sym.owner == defn.StringClass
-      if (tree.tpe.isInstanceOf[ConstantType] && isKnownPureOp(tree.symbol)
-             // A constant expression with pure arguments is pure.
-          || fn.symbol.isStable)
+      if (tree.tpe.isInstanceOf[ConstantType] && isKnownPureOp(tree.symbol) // A constant expression with pure arguments is pure.
+          || (fn.symbol.isStable && !fn.symbol.is(Lazy))
+          || fn.symbol.isPrimaryConstructor && fn.symbol.owner.isNoInitsClass) // TODO: include in isStable?
         minOf(exprPurity(fn), args.map(exprPurity)) `min` Pure
       else if (fn.symbol.is(Erased)) Pure
+      else if (fn.symbol.isStable /* && fn.symbol.is(Lazy) */)
+        minOf(exprPurity(fn), args.map(exprPurity)) `min` Idempotent
       else Impure
     case Typed(expr, _) =>
       exprPurity(expr)
@@ -449,7 +451,7 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
   def isIdempotentRef(tree: Tree)(implicit ctx: Context): Boolean =
     refPurity(tree) >= Idempotent
 
-  /** If `tree` is a constant expression, its value as a Literal,
+  /** (1) If `tree` is a constant expression, its value as a Literal,
    *  or `tree` itself otherwise.
    *
    *  Note: Demanding idempotency instead of purity in literalize is strictly speaking too loose.
@@ -485,11 +487,27 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
    *        Ident
    *        Select
    *        TypeApply
+   *
+   *  (2) A primitive unary operator expression `pre.op` where `op` is one of `+`, `-`, `~`, `!`
+   *  that has a constant type `ConstantType(v)` but that is not a constant expression
+   *  (i.e. `pre` has side-effects) is translated to
+   *
+   *     { pre; v }
+   *
+   *  This avoids the situation where we have a Select node that does not have a symbol.
    */
   def constToLiteral(tree: Tree)(implicit ctx: Context): Tree = {
     val tree1 = ConstFold(tree)
     tree1.tpe.widenTermRefExpr match {
-      case ConstantType(value) if isIdempotentExpr(tree1) => Literal(value)
+      case ConstantType(value) =>
+        if (isIdempotentExpr(tree1)) Literal(value).withSpan(tree.span)
+        else tree1 match {
+          case Select(qual, _) if tree1.tpe.isInstanceOf[ConstantType] =>
+            // it's a primitive unary operator; Simplify `pre.op` to `{ pre; v }` where `v` is the value of `pre.op`
+            Block(qual :: Nil, Literal(value)).withSpan(tree.span)
+          case _ =>
+            tree1
+        }
       case _ => tree1
     }
   }
@@ -537,7 +555,7 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
    *  apply of a function class?
    */
   def isSyntheticApply(tree: Tree): Boolean = tree match {
-    case Select(qual, nme.apply) => tree.pos.end == qual.pos.end
+    case Select(qual, nme.apply) => tree.span.end == qual.span.end
     case _ => false
   }
 
@@ -647,11 +665,11 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
    *  if no such path exists.
    *  Pre: `sym` must have a position.
    */
-  def defPath(sym: Symbol, root: Tree)(implicit ctx: Context): List[Tree] = trace.onDebug(s"defpath($sym with position ${sym.pos}, ${root.show})") {
-    require(sym.pos.exists)
+  def defPath(sym: Symbol, root: Tree)(implicit ctx: Context): List[Tree] = trace.onDebug(s"defpath($sym with position ${sym.span}, ${root.show})") {
+    require(sym.span.exists)
     object accum extends TreeAccumulator[List[Tree]] {
       def apply(x: List[Tree], tree: Tree)(implicit ctx: Context): List[Tree] = {
-        if (tree.pos.contains(sym.pos))
+        if (tree.span.contains(sym.span))
           if (definedSym(tree) == sym) tree :: x
           else {
             val x1 = foldOver(x, tree)
@@ -700,7 +718,7 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
    *  tree must be reachable from come tree stored in an enclosing context.
    */
   def definingStats(sym: Symbol)(implicit ctx: Context): List[Tree] =
-    if (!sym.pos.exists || (ctx eq NoContext) || ctx.compilationUnit == null) Nil
+    if (!sym.span.exists || (ctx eq NoContext) || ctx.compilationUnit == null) Nil
     else defPath(sym, ctx.compilationUnit.tpdTree) match {
       case defn :: encl :: _ =>
         def verify(stats: List[Tree]) =
@@ -737,22 +755,11 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
     case _ => This(ctx.owner.enclosingClass.asClass)
   }
 
-  /** Is this an application on a structural selection?
-   *
-   *  @see isStructuralTermSelect
+  /** Is this a (potentially applied) selection of a member of a structural type
+   *  that is not a member of an underlying class or trait?
    */
-  def isStructuralTermApply(tree: Tree)(implicit ctx: Context): Boolean = tree match {
-    case Apply(fun, _) =>
-      isStructuralTermSelect(fun)
-    case _ =>
-      false
-  }
-
-  /** Is this a selection of a member of a structural type that is not a member
-   *  of an underlying class or trait?
-   */
-  def isStructuralTermSelect(tree: Tree)(implicit ctx: Context): Boolean = tree match {
-    case tree: Select =>
+  def isStructuralTermSelectOrApply(tree: Tree)(implicit ctx: Context): Boolean = {
+    def isStructuralTermSelect(tree: Select) = {
       def hasRefinement(qualtpe: Type): Boolean = qualtpe.dealias match {
         case RefinedType(parent, rname, rinfo) =>
           rname == tree.name || hasRefinement(parent)
@@ -766,16 +773,16 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
           false
       }
       !tree.symbol.exists && tree.isTerm && hasRefinement(tree.qualifier.tpe)
-    case _ =>
-      false
-  }
-
-  /** Is this call a call to a method that is marked as Inline */
-  def isInlineCall(arg: Tree)(implicit ctx: Context): Boolean = arg match {
-    case _: RefTree | _: GenericApply[_] =>
-      !arg.tpe.widenDealias.isInstanceOf[MethodicType] && Inliner.isInlineable(arg)
-    case _ =>
-      false
+    }
+    def loop(tree: Tree): Boolean = tree match {
+      case Apply(fun, _) =>
+        loop(fun)
+      case tree: Select =>
+        isStructuralTermSelect(tree)
+      case _ =>
+        false
+    }
+    loop(tree)
   }
 
   /** Structural tree comparison (since == on trees is reference equality).

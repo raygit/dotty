@@ -74,7 +74,6 @@ object StdNames {
     final val IFkw: N        = kw("if")
     final val IMPLICITkw: N  = kw("implicit")
     final val IMPORTkw: N    = kw("import")
-    final val INLINEkw: N    = kw("inline")
     final val LAZYkw: N      = kw("lazy")
     final val MACROkw: N     = kw("macro")
     final val MATCHkw: N     = kw("match")
@@ -140,8 +139,6 @@ object StdNames {
     val WHILE_PREFIX: N               = "while$"
     val DEFAULT_EXCEPTION_NAME: N     = "ex$"
     val INITIALIZER_PREFIX: N         = "initial$"
-    val COMPANION_MODULE_METHOD: N    = "companion$module"
-    val COMPANION_CLASS_METHOD: N     = "companion$class"
     val BOUNDTYPE_ANNOT: N            = "$boundType$"
     val QUOTE: N                      = "'"
     val TYPE_QUOTE: N                = "type_'"
@@ -206,6 +203,7 @@ object StdNames {
     final val Serializable: N        = "Serializable"
     final val Singleton: N           = "Singleton"
     final val Throwable: N           = "Throwable"
+    final val IOOBException: N       = "IndexOutOfBoundsException"
 
     final val ClassfileAnnotation: N = "ClassfileAnnotation"
     final val ClassManifest: N       = "ClassManifest"
@@ -245,6 +243,7 @@ object StdNames {
 
     // Compiler-internal
     val ANYname: N                  = "<anyname>"
+    val COMPANION: N                = "<companion>"
     val CONSTRUCTOR: N              = "<init>"
     val STATIC_CONSTRUCTOR: N       = "<clinit>"
     val DEFAULT_CASE: N             = "defaultCase$"
@@ -348,6 +347,7 @@ object StdNames {
     val RootClass: N            = "RootClass"
     val Scala2: N               = "Scala2"
     val Select: N               = "Select"
+    val Shape: N                = "Shape"
     val StringContext: N        = "StringContext"
     val This: N                 = "This"
     val ThisType: N             = "ThisType"
@@ -392,6 +392,7 @@ object StdNames {
     val ClassManifestFactory: N = "ClassManifestFactory"
     val classOf: N              = "classOf"
     val clone_ : N              = "clone"
+    val common: N               = "common"
     val conforms_ : N           = "$conforms"
     val copy: N                 = "copy"
     val currentMirror: N        = "currentMirror"
@@ -399,6 +400,8 @@ object StdNames {
     val definitions: N          = "definitions"
     val delayedInit: N          = "delayedInit"
     val delayedInitArg: N       = "delayedInit$body"
+    val derived: N              = "derived"
+    val derives: N              = "derives"
     val drop: N                 = "drop"
     val dynamics: N             = "dynamics"
     val elem: N                 = "elem"
@@ -425,6 +428,7 @@ object StdNames {
     val flatMap: N              = "flatMap"
     val foreach: N              = "foreach"
     val genericArrayOps: N      = "genericArrayOps"
+    val genericClass: N         = "genericClass"
     val get: N                  = "get"
     val getClass_ : N           = "getClass"
     val getOrElse: N            = "getOrElse"
@@ -437,6 +441,7 @@ object StdNames {
     val implicitConversions: N  = "implicitConversions"
     val implicitly: N           = "implicitly"
     val in: N                   = "in"
+    val inline: N               = "inline"
     val info: N                 = "info"
     val inlinedEquals: N        = "inlinedEquals"
     val internal: N             = "internal"
@@ -479,15 +484,18 @@ object StdNames {
     val notify_ : N             = "notify"
     val null_ : N               = "null"
     val ofDim: N                = "ofDim"
+    val opaque: N               = "opaque"
+    val ordinal: N              = "ordinal"
     val origin: N               = "origin"
     val prefix : N              = "prefix"
     val productArity: N         = "productArity"
     val productElement: N       = "productElement"
+    val productElementName: N   = "productElementName"
     val productIterator: N      = "productIterator"
     val productPrefix: N        = "productPrefix"
     val raw_ : N                = "raw"
     val readResolve: N          = "readResolve"
-    val reflect : N             = "reflect"
+    val reflect: N              = "reflect"
     val reflectiveSelectable: N = "reflectiveSelectable"
     val reify : N               = "reify"
     val rootMirror : N          = "rootMirror"

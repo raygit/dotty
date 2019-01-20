@@ -500,4 +500,127 @@ class TestBCode extends DottyBytecodeTest {
         liftReceiver)
     }
   }
+
+  /** Test that the size of the lazy val initialiazer is under a certain threshold
+   *
+   *  - Fix to #5340 reduced the size from 39 instructions to 34
+   *  - Fix to #505  reduced the size from 34 instructions to 32
+   */
+  @Test def i5340 = {
+    val source =
+      """class Test {
+        |  def test = {
+        |    lazy val x = 1
+        |    x
+        |  }
+        |}
+      """.stripMargin
+
+    checkBCode(source) { dir =>
+      val clsIn   = dir.lookupName("Test.class", directory = false).input
+      val clsNode = loadClassNode(clsIn)
+      val method  = getMethod(clsNode, "x$lzyINIT1$1")
+      assertEquals(32, instructionsFromMethod(method).size)
+    }
+  }
+
+  /** Test that synchronize blocks don't box */
+  @Test def i505 = {
+    val source =
+      """class Test {
+        |  def test: Int = synchronized(1)
+        |}
+      """.stripMargin
+
+    checkBCode(source) { dir =>
+      val clsIn   = dir.lookupName("Test.class", directory = false).input
+      val clsNode = loadClassNode(clsIn)
+      val method  = getMethod(clsNode, "test")
+
+      val doBox = instructionsFromMethod(method).exists {
+        case Invoke(_, _, name, _, _) =>
+          name == "boxToInteger" || name == "unboxToInt"
+        case _ =>
+          false
+      }
+      assertFalse(doBox)
+    }
+  }
+
+  /** Test that the size of lazy field accesors is under a certain threshold
+   *
+   *  - Changed from 19 to 14
+   */
+  @Test def lazyFields = {
+    val source =
+      """class Test {
+        |  lazy val test = 1
+        |}
+      """.stripMargin
+
+    checkBCode(source) { dir =>
+      val clsIn   = dir.lookupName("Test.class", directory = false).input
+      val clsNode = loadClassNode(clsIn)
+      val method  = getMethod(clsNode, "test")
+      assertEquals(14, instructionsFromMethod(method).size)
+    }
+  }
+
+  /* Test that objects compile to *final* classes. */
+
+  def checkFinalClass(outputClassName: String, source: String) = {
+    checkBCode(source) {
+      dir =>
+        val moduleIn   = dir.lookupName(outputClassName, directory = false)
+        val moduleNode = loadClassNode(moduleIn.input)
+        assert((moduleNode.access & Opcodes.ACC_FINAL) != 0)
+    }
+  }
+
+  @Test def objectsAreFinal =
+    checkFinalClass("Foo$.class", "object Foo")
+
+  @Test def objectsInClassAreFinal =
+    checkFinalClass("Test$Foo$.class",
+      """class Test {
+        |  object Foo
+        |}
+      """.stripMargin)
+
+  @Test def objectsInObjsAreFinal =
+    checkFinalClass("Test$Foo$.class",
+      """object Test {
+        |  object Foo
+        |}
+      """.stripMargin)
+
+  @Test def objectsInObjDefAreFinal =
+    checkFinalClass("Test$Foo$1$.class",
+      """
+        |object Test {
+        |  def bar() = {
+        |    object Foo
+        |  }
+        |}
+      """.stripMargin)
+
+  @Test def objectsInClassDefAreFinal =
+    checkFinalClass("Test$Foo$1$.class",
+      """
+        |class Test {
+        |  def bar() = {
+        |    object Foo
+        |  }
+        |}
+      """.stripMargin)
+
+  @Test def objectsInObjValAreFinal =
+    checkFinalClass("Test$Foo$1$.class",
+      """
+        |class Test {
+        |  val bar = {
+        |    object Foo
+        |  }
+        |}
+      """.stripMargin)
 }

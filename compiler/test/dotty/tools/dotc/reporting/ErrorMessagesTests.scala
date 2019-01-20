@@ -1393,6 +1393,21 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       assertEquals(field.show, "method bar")
     }
 
+  @Test def staticShouldPrecedeNonStatic =
+    checkMessagesAfter(CheckStatic.name) {
+      """
+        |class Foo
+        |object Foo {
+        |  val foo = 1
+        |  @annotation.static val bar = 2
+        |}
+      """.stripMargin
+    }.expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+      val StaticFieldsShouldPrecedeNonStatic(field, _) = messages.head
+      assertEquals(field.show, "value bar")
+    }
+
   @Test def cyclicInheritance =
     checkMessagesAfter(FrontEnd.name) {
       "class A extends A"
@@ -1507,8 +1522,8 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       implicit val ctx: Context = ictx
       assertMessageCount(4, messages)
 
-      val tailRegMessages = messages.map({ case m: TailrecNotApplicable => m.symbolKind }).toSet
-      assertEquals(tailRegMessages, Set("variable", "value", "object", "class"))
+      val tailRecMessages = messages.map({ case TailrecNotApplicable(sym) => sym.showKind }).toSet
+      assertEquals(tailRecMessages, Set("variable", "value", "object", "class"))
     }
 
   @Test def notAnExtractor() =
@@ -1605,4 +1620,24 @@ class ErrorMessagesTests extends ErrorMessagesTest {
         message.msg
       )
     }
+
+    @Test def StableIdentifiers() =
+      checkMessagesAfter(FrontEnd.name) {
+        """
+          | object Test {
+          |   var x = 2
+          |   def test = 2 match {
+          |     case `x` => x + 1
+          |   }
+          | }
+        """.stripMargin
+      }.expect { (_, messages) =>
+        assertMessageCount(1, messages)
+        val message = messages.head
+        assertTrue(message.isInstanceOf[StableIdentPattern])
+        assertEquals(
+          "Stable identifier required, but `x` found",
+          message.msg
+        )
+      }
 }

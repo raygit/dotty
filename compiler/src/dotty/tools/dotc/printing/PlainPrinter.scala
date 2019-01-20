@@ -8,6 +8,7 @@ import StdNames.nme
 import ast.Trees._
 import typer.Implicits._
 import typer.ImportInfo
+import util.SourcePosition
 import java.lang.Integer.toOctalString
 import config.Config.summarizeDepth
 import scala.util.control.NonFatal
@@ -41,6 +42,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
 
   /** If true, tweak output so it is the same before and after pickling */
   protected def homogenizedView: Boolean = ctx.settings.YtestPickler.value
+  protected def debugPos: Boolean = ctx.settings.YdebugPos.value
 
   def homogenize(tp: Type): Type =
     if (homogenizedView)
@@ -501,8 +503,14 @@ class PlainPrinter(_ctx: Context) extends Printer {
       else
         Text()
 
-    nodeName ~ "(" ~ elems ~ tpSuffix ~ ")" ~ (Str(tree.pos.toString) provided ctx.settings.YprintPos.value)
+    nodeName ~ "(" ~ elems ~ tpSuffix ~ ")" ~ (Str(tree.sourcePos.toString) provided ctx.settings.YprintPos.value)
   }.close // todo: override in refined printer
+
+  def toText(pos: SourcePosition): Text = {
+    if (!pos.exists) "<no position>"
+    else if (pos.source.exists) s"${pos.source.file.name}:${pos.line + 1}"
+    else s"(no source file, offset = ${pos.span.point})"
+  }
 
   def toText(result: SearchResult): Text = result match {
     case result: SearchSuccess =>

@@ -34,6 +34,7 @@ class ScalaSettings extends Settings.SettingGroup {
   val color: Setting[String] = ChoiceSetting("-color", "mode", "Colored output", List("always", "never"/*, "auto"*/), "always"/* "auto"*/)
   val target: Setting[String] = ChoiceSetting("-target", "target", "Target platform for object files. All JVM 1.5 targets are deprecated.",
     List("jvm-1.5", "jvm-1.5-fjbg", "jvm-1.5-asm", "jvm-1.6", "jvm-1.7", "jvm-1.8", "msil"), "jvm-1.8")
+  val scalajs: Setting[Boolean] = BooleanSetting("-scalajs", "Compile in Scala.js mode (requires scalajs-library.jar on the classpath).")
   val unchecked: Setting[Boolean] = BooleanSetting("-unchecked", "Enable additional warnings where generated code depends on assumptions.")
   val uniqid: Setting[Boolean] = BooleanSetting("-uniqid", "Uniquely tag all identifiers in debugging output.")
   val usejavacp: Setting[Boolean] = BooleanSetting("-usejavacp", "Utilize the java.class.path in classpath resolution.")
@@ -62,7 +63,6 @@ class ScalaSettings extends Settings.SettingGroup {
    */
   val Xhelp: Setting[Boolean] = BooleanSetting("-X", "Print a synopsis of advanced options.")
   val XnoForwarders: Setting[Boolean] = BooleanSetting("-Xno-forwarders", "Do not generate static forwarders in mirror classes.")
-  val XminImplicitSearchDepth: Setting[Int] = IntSetting("-Xmin-implicit-search-depth", "Set number of levels of implicit searches undertaken before checking for divergence.", 5)
   val XmaxInlines: Setting[Int] = IntSetting("-Xmax-inlines", "Maximal number of successive inlines", 32)
   val XmaxClassfileName: Setting[Int] = IntSetting("-Xmax-classfile-name", "Maximum filename length for generated classes", 255, 72 to 255)
   val Xmigration: Setting[ScalaVersion] = VersionSetting("-Xmigration", "Warn about constructs whose behavior may have changed since version.")
@@ -87,13 +87,16 @@ class ScalaSettings extends Settings.SettingGroup {
   val YdebugFlags: Setting[Boolean] = BooleanSetting("-Ydebug-flags", "Print all flags of definitions")
   val YdebugMissingRefs: Setting[Boolean] = BooleanSetting("-Ydebug-missing-refs", "Print a stacktrace when a required symbol is missing")
   val YdebugNames: Setting[Boolean] = BooleanSetting("-Ydebug-names", "Show internal representation of names")
+  val YdebugPos: Setting[Boolean] = BooleanSetting("-Ydebug-pos", "Show full source positions including spans")
   val YtermConflict: Setting[String] = ChoiceSetting("-Yresolve-term-conflict", "strategy", "Resolve term conflicts", List("package", "object", "error"), "error")
   val Ylog: Setting[List[String]] = PhasesSetting("-Ylog", "Log operations during")
   val YemitTastyInClass: Setting[Boolean] = BooleanSetting("-Yemit-tasty-in-class", "Generate tasty in the .class file and add an empty *.hasTasty file.")
   val YlogClasspath: Setting[Boolean] = BooleanSetting("-Ylog-classpath", "Output information about what classpath is being applied.")
-  val YdisableFlatCpCaching: Setting[Boolean]  = BooleanSetting("-YdisableFlatCpCaching", "Do not cache flat classpath representation of classpath elements from jars across compiler instances.")
+  val YdisableFlatCpCaching: Setting[Boolean] = BooleanSetting("-YdisableFlatCpCaching", "Do not cache flat classpath representation of classpath elements from jars across compiler instances.")
 
   val Yscala2Unpickler: Setting[String] = StringSetting("-Yscala2-unpickler", "", "Control where we may get Scala 2 symbols from. This is either \"always\", \"never\", or a classpath.", "always")
+  // TODO: Remove once we drop support for 2.12 standard library
+  val YnewCollections: Setting[Boolean] = BooleanSetting("-Ynew-collections", "Inform the compiler that we are using the 2.13 collection library (even if the 2.12 library is on the classpath).")
 
   val YnoImports: Setting[Boolean] = BooleanSetting("-Yno-imports", "Compile without importing scala.*, java.lang.*, or Predef.")
   val YnoInline: Setting[Boolean] = BooleanSetting("-Yno-inline", "Suppress inlining.")
@@ -106,7 +109,7 @@ class ScalaSettings extends Settings.SettingGroup {
   val YtraceContextCreation: Setting[Boolean] = BooleanSetting("-Ytrace-context-creation", "Store stack trace of context creations.")
   val YshowSuppressedErrors: Setting[Boolean] = BooleanSetting("-Yshow-suppressed-errors", "Also show follow-on errors and warnings that are normally suppressed.")
   val YdetailedStats: Setting[Boolean] = BooleanSetting("-Ydetailed-stats", "show detailed internal compiler stats (needs Stats.enabled to be set to true).")
-  val Yheartbeat: Setting[Boolean] = BooleanSetting("-Ydetailed-stats", "show heartbeat stack trace of compiler operations (needs Stats.enabled to be set to true).")
+  val Yheartbeat: Setting[Boolean] = BooleanSetting("-Yheartbeat", "show heartbeat stack trace of compiler operations (needs Stats.enabled to be set to true).")
   val YprintPos: Setting[Boolean] = BooleanSetting("-Yprint-pos", "show tree positions.")
   val YprintPosSyms: Setting[Boolean] = BooleanSetting("-Yprint-pos-syms", "show symbol definitions positions.")
   val YnoDeepSubtypes: Setting[Boolean] = BooleanSetting("-Yno-deep-subtypes", "throw an exception on deep subtyping call stacks.")
@@ -145,6 +148,9 @@ class ScalaSettings extends Settings.SettingGroup {
   val YshowNoInline: Setting[Boolean] = BooleanSetting("-Yshow-no-inline", "Show inlined code without the 'inlined from' info")
 
   val YnoDecodeStacktraces: Setting[Boolean] = BooleanSetting("-Yno-decode-stacktraces", "Show raw StackOverflow stacktraces, instead of decoding them into triggering operations.")
+
+  val YinstrumentClosures: Setting[Boolean] = BooleanSetting("-Yinstrument-closures", "Add instrumentation code that counts closure creations.")
+  val YinstrumentAllocations: Setting[Boolean] = BooleanSetting("-Yinstrument-allocations", "Add instrumentation code that counts allocations.")
 
   /** Dottydoc specific settings */
   val siteRoot: Setting[String] = StringSetting(

@@ -3,26 +3,26 @@ package tools
 package vulpix
 
 import java.io.{File => JFile}
-import java.text.SimpleDateFormat
-import java.util.HashMap
+import java.lang.System.{lineSeparator => EOL}
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.{Files, NoSuchFileException, Path, Paths}
+import java.text.SimpleDateFormat
+import java.util.{HashMap, Timer, TimerTask}
 import java.util.concurrent.{TimeUnit, TimeoutException, Executors => JExecutors}
-import java.util.{Timer, TimerTask}
 
-import scala.io.Source
-import scala.util.control.NonFatal
-import scala.util.Try
 import scala.collection.mutable
+import scala.io.Source
+import scala.util.{Random, Try}
+import scala.util.control.NonFatal
 import scala.util.matching.Regex
-import scala.util.Random
+
+import dotc.{Compiler, Driver}
 import dotc.core.Contexts._
+import dotc.decompiler
+import dotc.interfaces.Diagnostic.ERROR
 import dotc.reporting.{Reporter, TestReporter}
 import dotc.reporting.diagnostic.MessageContainer
-import dotc.interfaces.Diagnostic.ERROR
 import dotc.util.DiffUtil
-import dotc.{Compiler, Driver}
-import dotc.decompiler
 import dotty.tools.vulpix.TestConfiguration.defaultOptions
 
 /** A parallel testing suite whose goal is to integrate nicely with JUnit
@@ -535,16 +535,16 @@ trait ParallelTesting extends RunnerOrchestration { self =>
                     val ignoredFilePathLine = "/** Decompiled from"
                     val stripTrailingWhitespaces = "(.*\\S|)\\s+".r
                     val output = Source.fromFile(outDir.getParent + "_decompiled" + JFile.separator + outDir.getName
-                      + JFile.separator + "decompiled.scala").getLines().map {line =>
+                      + JFile.separator + "decompiled.scala", "UTF-8").getLines().map {line =>
                       stripTrailingWhitespaces.unapplySeq(line).map(_.head).getOrElse(line)
                     }.toList
 
-                    val check: String = Source.fromFile(checkFile).getLines().filter(!_.startsWith(ignoredFilePathLine))
-                      .mkString("\n")
+                    val check: String = Source.fromFile(checkFile, "UTF-8").getLines().filter(!_.startsWith(ignoredFilePathLine))
+                      .mkString(EOL)
 
-                    if (output.filter(!_.startsWith(ignoredFilePathLine)).mkString("\n") != check) {
+                    if (output.filter(!_.startsWith(ignoredFilePathLine)).mkString(EOL) != check) {
                       val outFile = dotty.tools.io.File(checkFile.toPath).addExtension(".out")
-                      outFile.writeAll(output.mkString("\n"))
+                      outFile.writeAll(output.mkString(EOL))
                       val msg =
                         s"""Output differed for test $name, use the following command to see the diff:
                            |  > diff $checkFile $outFile
@@ -617,7 +617,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
         case Success(_) if !checkFile.isDefined || !checkFile.get.exists => // success!
         case Success(output) => {
           val outputLines = output.linesIterator.toArray :+ DiffUtil.EOF
-          val checkLines: Array[String] = Source.fromFile(checkFile.get).getLines().toArray :+ DiffUtil.EOF
+          val checkLines: Array[String] = Source.fromFile(checkFile.get, "UTF-8").getLines().toArray :+ DiffUtil.EOF
           val sourceTitle = testSource.title
 
           def linesMatch =
@@ -726,7 +726,7 @@ trait ParallelTesting extends RunnerOrchestration { self =>
           val errorMap = new HashMap[String, Integer]()
           var expectedErrors = 0
           files.filter(_.getName.endsWith(".scala")).foreach { file =>
-            Source.fromFile(file).getLines().zipWithIndex.foreach { case (line, lineNbr) =>
+            Source.fromFile(file, "UTF-8").getLines().zipWithIndex.foreach { case (line, lineNbr) =>
               val errors = line.sliding("// error".length).count(_.mkString == "// error")
               if (errors > 0)
                 errorMap.put(s"${file.getAbsolutePath}:${lineNbr}", errors)
@@ -808,6 +808,32 @@ trait ParallelTesting extends RunnerOrchestration { self =>
         else if (!errorMap.isEmpty)
           fail(s"\nExpected error(s) have {<error position>=<unreported error>}: $errorMap")
 
+        registerCompletion()
+      }
+    }
+  }
+
+  private final class NoCrashTest(testSources: List[TestSource], times: Int, threadLimit: Option[Int], suppressAllOutput: Boolean)(implicit summaryReport: SummaryReporting)
+    extends Test(testSources, times, threadLimit, suppressAllOutput) {
+    protected def encapsulatedCompilation(testSource: TestSource) = new LoggedRunnable {
+      def checkTestSource(): Unit = tryCompile(testSource) {
+        def fail(msg: String): Nothing = {
+          echo(msg)
+          failTestSource(testSource)
+          ???
+        }
+        testSource match {
+          case testSource@JointCompilationSource(_, files, flags, outDir, fromTasty, decompilation) =>
+            val sourceFiles = testSource.sourceFiles
+            val reporter =
+              try compile(sourceFiles, flags, true, outDir)
+              catch {
+                case ex: Throwable => fail(s"Fatal compiler crash when compiling: ${testSource.title}")
+              }
+            if (reporter.compilerCrashed)
+              fail(s"Compiler crashed when compiling: ${testSource.title}")
+          case testSource@SeparateCompilationSource(_, dir, flags, outDir) => unsupported("NoCrashTest - SeparateCompilationSource")
+        }
         registerCompletion()
       }
     }
@@ -988,6 +1014,19 @@ trait ParallelTesting extends RunnerOrchestration { self =>
         fail(s"Neg test shouldn't have failed, but did. Reasons:\n${ reasonsForFailure(test) }")
       }
       else if (!shouldFail && test.didFail) {
+        fail("Neg test should have failed, but did not")
+      }
+
+      this
+    }
+
+    /** Creates a "fuzzy" test run, which makes sure that each test compiles (or not) without crashing */
+    def checkNoCrash()(implicit summaryReport: SummaryReporting): this.type = {
+      val test = new NoCrashTest(targets, times, threadLimit, shouldSuppressOutput).executeTestSuite()
+
+      cleanup()
+
+      if (test.didFail) {
         fail("Neg test should have failed, but did not")
       }
 
@@ -1242,9 +1281,15 @@ trait ParallelTesting extends RunnerOrchestration { self =>
 
     val (dirs, files) = compilationTargets(sourceDir, fileFilter)
 
+    val isPicklerTest = flags.options.contains("-Ytest-pickler")
+    def ignoreDir(dir: JFile): Boolean = {
+      // Pickler tests stop after pickler not producing class/tasty files. The second part of the compilation
+      // will not be able to compile due to the missing artifacts from the first part.
+      isPicklerTest && dir.listFiles().exists(file => file.getName.endsWith("_2.scala") || file.getName.endsWith("_2.java"))
+    }
     val targets =
       files.map(f => JointCompilationSource(testGroup.name, Array(f), flags, createOutputDirsForFile(f, sourceDir, outDir))) ++
-      dirs.map(dir => SeparateCompilationSource(testGroup.name, dir, flags, createOutputDirsForDir(dir, sourceDir, outDir)))
+      dirs.collect { case dir if !ignoreDir(dir) => SeparateCompilationSource(testGroup.name, dir, flags, createOutputDirsForDir(dir, sourceDir, outDir)) }
 
     // Create a CompilationTest and let the user decide whether to execute a pos or a neg test
     new CompilationTest(targets)

@@ -10,7 +10,7 @@ import java.lang.Double.longBitsToDouble
 import Contexts._, Symbols._, Types._, Scopes._, SymDenotations._, Names._, NameOps._
 import StdNames._, Denotations._, NameOps._, Flags._, Constants._, Annotations._
 import NameKinds.{Scala2MethodNameKinds, SuperAccessorName, ExpandedName}
-import util.Positions._
+import util.Spans._
 import dotty.tools.dotc.ast.{tpd, untpd}, ast.tpd._
 import ast.untpd.Modifiers
 import printing.Texts._
@@ -119,20 +119,16 @@ object Scala2Unpickler {
     val scalacCompanion = denot.classSymbol.scalacLinkedClass
 
     def registerCompanionPair(module: Symbol, claz: Symbol) = {
-      import transform.SymUtils._
-      module.registerCompanionMethod(nme.COMPANION_CLASS_METHOD, claz)
-      if (claz.isClass) {
-        claz.registerCompanionMethod(nme.COMPANION_MODULE_METHOD, module)
-      }
+      module.registerCompanion(claz)
+      claz.registerCompanion(module)
     }
 
-    if (denot.flagsUNSAFE is Module) {
+    if (denot.flagsUNSAFE is Module)
       registerCompanionPair(denot.classSymbol, scalacCompanion)
-    } else {
+    else
       registerCompanionPair(scalacCompanion, denot.classSymbol)
-    }
 
-    tempInfo.finalize(denot, normalizedParents) // install final info, except possibly for typeparams ordering
+    tempInfo.finalize(denot, normalizedParents, ost) // install final info, except possibly for typeparams ordering
     denot.ensureTypeParamsInCorrectOrder()
   }
 }
@@ -988,7 +984,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
       symbol = readSymbolRef()
     }
 
-    implicit val pos: Position = NoPosition
+    implicit val span: Span = NoSpan
 
     tag match {
       case EMPTYtree =>
@@ -1034,6 +1030,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
         TypeDef(symbol.asType)
 
       case LABELtree =>
+        ???
         setSymName()
         val rhs = readTreeRef()
         val params = until(end, () => readIdentRef())
@@ -1060,7 +1057,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
         val parents = times(readNat(), () => readTreeRef())
         val self = readValDefRef()
         val body = until(end, () => readTreeRef())
-        untpd.Template(???, parents, self, body) // !!! TODO: pull out primary constructor
+        untpd.Template(???, parents, Nil, self, body) // !!! TODO: pull out primary constructor
           .withType(symbol.namedType)
 
       case BLOCKtree =>

@@ -12,6 +12,9 @@ case class Mode(val bits: Int) extends AnyVal {
 
   override def toString: String =
     (0 until 31).filter(i => (bits & (1 << i)) != 0).map(modeName).mkString("Mode(", ",", ")")
+
+  def ==(that: Mode): Boolean = this.bits == that.bits
+  def !=(that: Mode): Boolean = this.bits != that.bits
 }
 
 object Mode {
@@ -100,4 +103,7 @@ object Mode {
 
   /** Read comments from definitions when unpickling from TASTY */
   val ReadComments: Mode = newMode(22, "ReadComments")
+
+  /** Suppress insertion of apply or implicit conversion on qualifier */
+  val FixedQualifier: Mode = newMode(23, "FixedQualifier")
 }
