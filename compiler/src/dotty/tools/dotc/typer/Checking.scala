@@ -16,13 +16,17 @@ import ProtoTypes._
 import Scopes._
 import CheckRealizable._
 import ErrorReporting.errorTree
+import rewrites.Rewrites.patch
+import util.Spans.Span
 
 import util.SourcePosition
 import transform.SymUtils._
 import Decorators._
 import ErrorReporting.{err, errorType}
-import config.Printers.typr
+import config.Printers.{typr, patmatch}
 import NameKinds.DefaultGetterName
+import Applications.unapplyArgs
+import transform.patmat.SpaceEngine.isIrrefutableUnapply
 
 import collection.mutable
 import SymDenotations.{NoCompleter, NoDenotation}
@@ -236,7 +240,7 @@ object Checking {
               )
             case prefix: NamedType =>
               (!sym.is(Private) && prefix.derivesFrom(sym.owner)) ||
-              (!prefix.symbol.isStaticOwner && isInteresting(prefix.prefix))
+              (!prefix.symbol.moduleClass.isStaticOwner && isInteresting(prefix.prefix))
             case SuperType(thistp, _) => isInteresting(thistp)
             case AndType(tp1, tp2) => isInteresting(tp1) || isInteresting(tp2)
             case OrType(tp1, tp2) => isInteresting(tp1) && isInteresting(tp2)
@@ -594,6 +598,47 @@ trait Checking {
       ctx.error(ex"$cls cannot be instantiated since it${rstatus.msg}", pos)
   }
 
+  /** Check that pattern `pat` is irrefutable for scrutinee tye `pt`.
+   *  This means `pat` is either marked @unchecked or `pt` conforms to the
+   *  pattern's type. If pattern is an UnApply, do the check recursively.
+   */
+  def checkIrrefutable(pat: Tree, pt: Type)(implicit ctx: Context): Boolean = {
+    patmatch.println(i"check irrefutable $pat: ${pat.tpe} against $pt")
+
+    def fail(pat: Tree, pt: Type): Boolean = {
+      ctx.errorOrMigrationWarning(
+        ex"""pattern's type ${pat.tpe} is more specialized than the right hand side expression's type ${pt.dropAnnot(defn.UncheckedAnnot)}
+            |
+            |If the narrowing is intentional, this can be communicated by writing `: @unchecked` after the full pattern.${err.rewriteNotice}""",
+        pat.sourcePos)
+      false
+    }
+
+    def check(pat: Tree, pt: Type): Boolean = (pt <:< pat.tpe) || fail(pat, pt)
+
+    !ctx.settings.strict.value || // only in -strict mode for now since mitigations work only after this PR
+    pat.tpe.widen.hasAnnotation(defn.UncheckedAnnot) || {
+      pat match {
+        case Bind(_, pat1) =>
+          checkIrrefutable(pat1, pt)
+        case UnApply(fn, _, pats) =>
+          check(pat, pt) &&
+          (isIrrefutableUnapply(fn) || fail(pat, pt)) && {
+            val argPts = unapplyArgs(fn.tpe.widen.finalResultType, fn, pats, pat.sourcePos)
+            pats.corresponds(argPts)(checkIrrefutable)
+          }
+        case Alternative(pats) =>
+          pats.forall(checkIrrefutable(_, pt))
+        case Typed(arg, tpt) =>
+          check(pat, pt) && checkIrrefutable(arg, pt)
+        case Ident(nme.WILDCARD) =>
+          true
+        case _ =>
+          check(pat, pt)
+      }
+    }
+  }
+
   /** Check that `path` is a legal prefix for an import or export clause */
   def checkLegalImportPath(path: Tree)(implicit ctx: Context): Unit = {
     checkStable(path.tpe, path.sourcePos)
@@ -825,11 +870,6 @@ trait Checking {
     }
     else tpt
 
-  /** Check that `tpt` does not refer to a singleton type */
-  def checkNotSingleton(tpt: Tree, where: String)(implicit ctx: Context): Tree =
-    if (tpt.tpe.isSingleton) errorTree(tpt, ex"Singleton type ${tpt.tpe} is not allowed $where")
-    else tpt
-
   /** Verify classes extending AnyVal meet the requirements */
   def checkDerivedValueClass(clazz: Symbol, stats: List[Tree])(implicit ctx: Context): Unit =
     Checking.checkDerivedValueClass(clazz, stats)
@@ -1046,7 +1086,6 @@ trait NoChecking extends ReChecking {
   override def checkNoDoubleDeclaration(cls: Symbol)(implicit ctx: Context): Unit = ()
   override def checkParentCall(call: Tree, caller: ClassSymbol)(implicit ctx: Context): Unit = ()
   override def checkSimpleKinded(tpt: Tree)(implicit ctx: Context): Tree = tpt
-  override def checkNotSingleton(tpt: Tree, where: String)(implicit ctx: Context): Tree = tpt
   override def checkDerivedValueClass(clazz: Symbol, stats: List[Tree])(implicit ctx: Context): Unit = ()
   override def checkTraitInheritance(parentSym: Symbol, cls: ClassSymbol, pos: SourcePosition)(implicit ctx: Context): Unit = ()
   override def checkCaseInheritance(parentSym: Symbol, caseCls: ClassSymbol, pos: SourcePosition)(implicit ctx: Context): Unit = ()

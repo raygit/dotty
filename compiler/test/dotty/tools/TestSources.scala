@@ -43,7 +43,9 @@ object TestSources {
       .filter(_.nonEmpty)
       .toList
 
-    assert(list.nonEmpty)
+    if (list.isEmpty)
+      println(s"$path is empty")
+
     list
   }
 
@@ -65,7 +67,6 @@ object TestSources {
         .map(_.toString)
         .toList
 
-      assert(sources.nonEmpty)
       sources
     }
     finally files.close()

@@ -396,8 +396,11 @@ object SymDenotations {
         // need to use initial owner to disambiguate, as multiple private symbols with the same name
         // might have been moved from different origins into the same class
 
-    /** The name with which the denoting symbol was created */
+    /** The effective name with which the denoting symbol was created */
     final def originalName(implicit ctx: Context): Name = initial.effectiveName
+
+    /** The owner with which the denoting symbol was created. */
+    final def originalOwner(implicit ctx: Context): Symbol = initial.maybeOwner
 
     /** The encoded full path name of this denotation, where outer names and inner names
      *  are separated by `separator` strings as indicated by the given name kind.
@@ -803,7 +806,7 @@ object SymDenotations {
     def isSkolem: Boolean = name == nme.SKOLEM
 
     def isInlineMethod(implicit ctx: Context): Boolean =
-      is(InlineMethod, butNot = AccessorOrSynthetic) &&
+      is(InlineMethod, butNot = Accessor) &&
       name != nme.unapply  // unapply methods do not count as inline methods
                            // we need an inline flag on them only do that
                            // reduceProjection gets access to their rhs
@@ -849,7 +852,9 @@ object SymDenotations {
      * During completion, references to moduleClass and sourceModules are stored in
      * the completers.
      */
-    /** The class implementing this module, NoSymbol if not applicable. */
+    /** If this a module, return the corresponding class, if this is a module, return itself,
+     *  otherwise NoSymbol
+     */
     final def moduleClass(implicit ctx: Context): Symbol = {
       def notFound = {
       	if (Config.showCompletions) println(s"missing module class for $name: $myInfo")
@@ -867,23 +872,34 @@ object SymDenotations {
             }
           case _ => notFound
         }
-      else NoSymbol
-    }
-
-    /** The module implemented by this module class, NoSymbol if not applicable. */
-    final def sourceModule(implicit ctx: Context): Symbol = myInfo match {
-      case ClassInfo(_, _, _, _, selfType) if this is ModuleClass =>
-        def sourceOfSelf(tp: TypeOrSymbol): Symbol = tp match {
-          case tp: TermRef => tp.symbol
-          case tp: Symbol => sourceOfSelf(tp.info)
-          case tp: RefinedType => sourceOfSelf(tp.parent)
-        }
-        sourceOfSelf(selfType)
-      case info: LazyType =>
-        info.sourceModule
-      case _ =>
+      else if (this is ModuleClass)
+        symbol
+      else
         NoSymbol
     }
+
+    /** If this a module class, return the corresponding module, if this is a module, return itself,
+     *  otherwise NoSymbol
+     */
+    final def sourceModule(implicit ctx: Context): Symbol =
+      if (this is ModuleClass)
+        myInfo match {
+          case ClassInfo(_, _, _, _, selfType) =>
+            def sourceOfSelf(tp: TypeOrSymbol): Symbol = tp match {
+              case tp: TermRef => tp.symbol
+              case tp: Symbol => sourceOfSelf(tp.info)
+              case tp: RefinedType => sourceOfSelf(tp.parent)
+            }
+            sourceOfSelf(selfType)
+          case info: LazyType =>
+            info.sourceModule
+          case _ =>
+            NoSymbol
+        }
+      else if (this is ModuleVal)
+        symbol
+      else
+        NoSymbol
 
     /** The field accessed by this getter or setter, or if it does not exist, the getter */
     def accessedFieldOrGetter(implicit ctx: Context): Symbol = {
@@ -1751,9 +1767,11 @@ object SymDenotations {
           Stats.record("computeBaseType, total")
           Stats.record(s"computeBaseType, ${tp.getClass}")
         }
+        val normed = tp.tryNormalize
+        if (normed.exists) return recur(normed)
+
         tp match {
           case tp @ TypeRef(prefix, _) =>
-
             def foldGlb(bt: Type, ps: List[Type]): Type = ps match {
               case p :: ps1 => foldGlb(bt & recur(p), ps1)
               case _ => bt
@@ -1794,7 +1812,6 @@ object SymDenotations {
             computeTypeRef
 
           case tp @ AppliedType(tycon, args) =>
-
             def computeApplied = {
               btrCache.put(tp, NoPrefix)
               val baseTp =
@@ -1812,8 +1829,8 @@ object SymDenotations {
 
           case tp: TypeParamRef =>  // uncachable, since baseType depends on context bounds
             recur(ctx.typeComparer.bounds(tp).hi)
-          case tp: TypeProxy =>
 
+          case tp: TypeProxy =>
             def computeTypeProxy = {
               val superTp = tp.superType
               val baseTp = recur(superTp)
@@ -1827,7 +1844,6 @@ object SymDenotations {
             computeTypeProxy
 
           case tp: AndOrType =>
-
             def computeAndOrType = {
               val tp1 = tp.tp1
               val tp2 = tp.tp2
@@ -1851,6 +1867,7 @@ object SymDenotations {
 
           case JavaArrayType(_) if symbol == defn.ObjectClass =>
             this.typeRef
+
           case _ =>
             NoType
         }
@@ -2014,7 +2031,15 @@ object SymDenotations {
       def recur(pobjs: List[ClassDenotation], acc: PreDenotation): PreDenotation = pobjs match {
         case pcls :: pobjs1 =>
           if (pcls.isCompleting) recur(pobjs1, acc)
-          else recur(pobjs1, acc.union(pcls.computeNPMembersNamed(name)))
+          else {
+            // A package object inherits members from `Any` and `Object` which
+            // should not be accessible from the package prefix.
+            val pmembers = pcls.computeNPMembersNamed(name).filterWithPredicate { d =>
+              val owner = d.symbol.maybeOwner
+              (owner ne defn.AnyClass) && (owner ne defn.ObjectClass)
+            }
+            recur(pobjs1, acc.union(pmembers))
+          }
         case nil =>
           val directMembers = super.computeNPMembersNamed(name)
           if (acc.exists) acc.union(directMembers.filterWithPredicate(!_.symbol.isAbsent))

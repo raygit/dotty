@@ -217,29 +217,6 @@ object Applications {
   class ExtMethodApply(app: Tree)(implicit @constructorOnly src: SourceFile)
   extends IntegratedTypeArgs(app)
 
-  /** 1. If we are in an inline method but not in a nested quote, mark the inline method
-   *  as a macro.
-   *
-   *  2. If selection is a quote or splice node, record that fact in the current compilation unit.
-   */
-  def handleMeta(tree: Tree)(implicit ctx: Context): tree.type = {
-    import transform.SymUtils._
-
-    def markAsMacro(c: Context): Unit =
-      if (c.owner eq c.outer.owner) markAsMacro(c.outer)
-      else if (c.owner.isInlineMethod) c.owner.setFlag(Macro)
-      else if (!c.outer.owner.is(Package)) markAsMacro(c.outer)
-    val sym = tree.symbol
-    if (sym.isSplice) {
-      if (StagingContext.level == 0)
-        markAsMacro(ctx)
-      ctx.compilationUnit.needsStaging = true
-    } else if (sym.isQuote) {
-      ctx.compilationUnit.needsStaging = true
-    }
-
-    tree
-  }
 }
 
 trait Applications extends Compatibility { self: Typer with Dynamic =>
@@ -579,6 +556,8 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
             args match {
               case arg :: Nil if isVarArg(arg) =>
                 addTyped(arg, formal)
+              case Typed(Literal(Constant(null)), _) :: Nil =>
+                addTyped(args.head, formal)
               case _ =>
                 val elemFormal = formal.widenExpr.argTypesLo.head
                 val typedArgs =
@@ -820,7 +799,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
    *  or, if application is an operator assignment, also an `Assign` or
    *  Block node.
    */
-  def typedApply(tree: untpd.Apply, pt: Type)(implicit ctx: Context): Tree = handleMeta {
+  def typedApply(tree: untpd.Apply, pt: Type)(implicit ctx: Context): Tree = {
 
     def realApply(implicit ctx: Context): Tree = track("realApply") {
       val originalProto = new FunProto(tree.args, IgnoredProto(pt))(this, tree.isContextual)(argCtx(tree))
@@ -964,7 +943,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
     val isNamed = hasNamedArg(tree.args)
     val typedArgs = if (isNamed) typedNamedArgs(tree.args) else tree.args.mapconserve(typedType(_))
     record("typedTypeApply")
-    handleMeta(typedFunPart(tree.fun, PolyProto(typedArgs, pt)) match {
+    typedFunPart(tree.fun, PolyProto(typedArgs, pt)) match {
       case IntegratedTypeArgs(app) =>
         app
       case _: TypeApply if !ctx.isAfterTyper =>
@@ -986,7 +965,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
         }
         if (typedFn.tpe eq TryDynamicCallType) tryDynamicTypeApply()
         else assignType(cpy.TypeApply(tree)(typedFn, typedArgs), typedFn, typedArgs)
-    })
+    }
   }
 
   /** Rewrite `new Array[T](....)` if T is an unbounded generic to calls to newGenericArray.
@@ -1128,7 +1107,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
           if (selType <:< unapplyArgType) {
             unapp.println(i"case 1 $unapplyArgType ${ctx.typerState.constraint}")
             fullyDefinedType(unapplyArgType, "pattern selector", tree.span)
-            selType
+            selType.dropAnnot(defn.UncheckedAnnot) // need to drop @unchecked. Just because the selector is @unchecked, the pattern isn't.
           } else if (isSubTypeOfParent(unapplyArgType, selType)(ctx.addMode(Mode.GADTflexible))) {
             val patternBound = maximizeType(unapplyArgType, tree.span, fromScala2x)
             if (patternBound.nonEmpty) unapplyFn = addBinders(unapplyFn, patternBound)
@@ -1184,7 +1163,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
   /** Is given method reference applicable to type arguments `targs` and argument trees `args`?
    *  @param  resultType   The expected result type of the application
    */
-  def isApplicable(methRef: TermRef, targs: List[Type], args: List[Tree], resultType: Type, keepConstraint: Boolean)(implicit ctx: Context): Boolean = {
+  def isApplicableMethodRef(methRef: TermRef, targs: List[Type], args: List[Tree], resultType: Type, keepConstraint: Boolean)(implicit ctx: Context): Boolean = {
     def isApp(implicit ctx: Context): Boolean =
       new ApplicableToTrees(methRef, targs, args, resultType).success
     if (keepConstraint) isApp else ctx.test(implicit ctx => isApp)
@@ -1193,35 +1172,39 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
   /** Is given method reference applicable to type arguments `targs` and argument trees `args` without inferring views?
     *  @param  resultType   The expected result type of the application
     */
-  def isDirectlyApplicable(methRef: TermRef, targs: List[Type], args: List[Tree], resultType: Type)(implicit ctx: Context): Boolean =
+  def isDirectlyApplicableMethodRef(methRef: TermRef, targs: List[Type], args: List[Tree], resultType: Type)(implicit ctx: Context): Boolean =
     ctx.test(implicit ctx => new ApplicableToTreesDirectly(methRef, targs, args, resultType).success)
 
   /** Is given method reference applicable to argument types `args`?
    *  @param  resultType   The expected result type of the application
    */
-  def isApplicable(methRef: TermRef, args: List[Type], resultType: Type)(implicit ctx: Context): Boolean =
+  def isApplicableMethodRef(methRef: TermRef, args: List[Type], resultType: Type)(implicit ctx: Context): Boolean =
     ctx.test(implicit ctx => new ApplicableToTypes(methRef, args, resultType).success)
 
   /** Is given type applicable to type arguments `targs` and argument trees `args`,
    *  possibly after inserting an `apply`?
    *  @param  resultType   The expected result type of the application
    */
-  def isApplicable(tp: Type, targs: List[Type], args: List[Tree], resultType: Type, keepConstraint: Boolean)(implicit ctx: Context): Boolean =
-    onMethod(tp, isApplicable(_, targs, args, resultType, keepConstraint))
+  def isApplicableType(tp: Type, targs: List[Type], args: List[Tree], resultType: Type, keepConstraint: Boolean)(implicit ctx: Context): Boolean =
+    onMethod(tp, targs.nonEmpty || args.nonEmpty) {
+      isApplicableMethodRef(_, targs, args, resultType, keepConstraint)
+    }
 
   /** Is given type applicable to argument types `args`, possibly after inserting an `apply`?
    *  @param  resultType   The expected result type of the application
    */
-  def isApplicable(tp: Type, args: List[Type], resultType: Type)(implicit ctx: Context): Boolean =
-    onMethod(tp, isApplicable(_, args, resultType))
+  def isApplicableType(tp: Type, args: List[Type], resultType: Type)(implicit ctx: Context): Boolean =
+    onMethod(tp, args.nonEmpty) {
+      isApplicableMethodRef(_, args, resultType)
+    }
 
-  private def onMethod(tp: Type, p: TermRef => Boolean)(implicit ctx: Context): Boolean = tp match {
+  private def onMethod(tp: Type, followApply: Boolean)(p: TermRef => Boolean)(implicit ctx: Context): Boolean = tp match {
     case methRef: TermRef if methRef.widenSingleton.isInstanceOf[MethodicType] =>
       p(methRef)
     case mt: MethodicType =>
       p(mt.narrow)
     case _ =>
-      tp.member(nme.apply).hasAltWith(d => p(TermRef(tp, nme.apply, d)))
+      followApply && tp.member(nme.apply).hasAltWith(d => p(TermRef(tp, nme.apply, d)))
   }
 
   /** Does `tp` have an extension method named `name` with this-argument `argType` and
@@ -1229,7 +1212,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
    */
   def hasExtensionMethod(tp: Type, name: TermName, argType: Type, resultType: Type)(implicit ctx: Context) = {
     def qualifies(mbr: Denotation) =
-      mbr.exists && isApplicable(tp.select(name, mbr), argType :: Nil, resultType)
+      mbr.exists && isApplicableType(tp.select(name, mbr), argType :: Nil, resultType)
     tp.memberBasedOnFlags(name, required = ExtensionMethod) match {
       case mbr: SingleDenotation => qualifies(mbr)
       case mbr => mbr.hasAltWith(qualifies(_))
@@ -1293,7 +1276,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
         val formals1 =
           if (tp1.isVarArgsMethod && tp2.isVarArgsMethod) tp1.paramInfos.map(_.repeatedToSingle)
           else tp1.paramInfos
-        isApplicable(alt2, formals1, WildcardType) ||
+        isApplicableMethodRef(alt2, formals1, WildcardType) ||
         tp1.paramInfos.isEmpty && tp2.isInstanceOf[LambdaType]
       case tp1: PolyType => // (2)
         val nestedCtx = ctx.fresh.setExploreTyperState()
@@ -1475,7 +1458,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
    *  possibly also type argument `targs` that need to be applied to each alternative
    *  to form the method type.
    *  Two trials: First, without implicits or SAM conversions enabled. Then,
-   *  if the fist finds no eligible candidates, with implicits and SAM conversions enabled.
+   *  if the first finds no eligible candidates, with implicits and SAM conversions enabled.
    */
   def resolveOverloaded(alts: List[TermRef], pt: Type)(implicit ctx: Context): List[TermRef] = track("resolveOverloaded") {
 
@@ -1506,7 +1489,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
      *  probability of pruning the search. result type comparisons are neither cheap nor
      *  do they prune much, on average.
      */
-    def adaptByResult(chosen: TermRef) = pt match {
+    def adaptByResult(chosen: TermRef, alts: List[TermRef]) = pt match {
       case pt: FunProto if !ctx.test(implicit ctx => resultConforms(chosen.symbol, chosen, pt.resultType)) =>
         val conformingAlts = alts.filter(alt =>
           (alt ne chosen) && ctx.test(implicit ctx => resultConforms(alt.symbol, alt, pt.resultType)))
@@ -1522,13 +1505,42 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
       case _ => chosen
     }
 
-    var found = resolveOverloaded(alts, pt, Nil)(ctx.retractMode(Mode.ImplicitsEnabled))
-    if (found.isEmpty && ctx.mode.is(Mode.ImplicitsEnabled))
-      found = resolveOverloaded(alts, pt, Nil)
-    found match {
-      case alt :: Nil => adaptByResult(alt) :: Nil
-      case _ => found
+    def resolve(alts: List[TermRef]) = {
+      var found = resolveOverloaded(alts, pt, Nil)(ctx.retractMode(Mode.ImplicitsEnabled))
+      if (found.isEmpty && ctx.mode.is(Mode.ImplicitsEnabled))
+        found = resolveOverloaded(alts, pt, Nil)
+      found match {
+        case alt :: Nil => adaptByResult(alt, alts) :: Nil
+        case _ => found
+      }
     }
+
+    /** Try an apply method, if
+     *   - the result is applied to value arguments and alternative is not a method, or
+     *   - the result is applied to type arguments and alternative is not polymorphic
+     */
+    val tryApply: Type => Boolean = alt => pt match {
+      case pt: FunProto => !alt.widen.stripPoly.isInstanceOf[MethodType]
+      case pt: PolyProto => !alt.widen.isInstanceOf[PolyType]
+      case _ => false
+    }
+
+    /** Replace each alternative by its apply members where necessary */
+    def applyMembers(alt: TermRef): List[TermRef] =
+      if (tryApply(alt)) alt.member(nme.apply).alternatives.map(TermRef(alt, nme.apply, _))
+      else alt :: Nil
+
+    /** Fall back from an apply method to its original alternative */
+    def retract(alt: TermRef): TermRef =
+      if (alt.name == nme.apply && !alts.contains(alt))
+        alts.find(_.symbol == alt.prefix.termSymbol).getOrElse(alt)
+      else alt
+
+    if (alts.exists(tryApply)) {
+      val expanded = alts.flatMap(applyMembers)
+      resolve(expanded).map(retract)
+    }
+    else resolve(alts)
   }
 
   /** This private version of `resolveOverloaded` does the bulk of the work of
@@ -1562,7 +1574,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
     }
 
     def narrowByTypes(alts: List[TermRef], argTypes: List[Type], resultType: Type): List[TermRef] =
-      alts filter (isApplicable(_, argTypes, resultType))
+      alts filter (isApplicableMethodRef(_, argTypes, resultType))
 
     val candidates = pt match {
       case pt @ FunProto(args, resultType) =>
@@ -1572,7 +1584,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
           case x => x
         }
 
-        def sizeFits(alt: TermRef, tp: Type): Boolean = tp.stripPoly match {
+        def sizeFits(alt: TermRef): Boolean = alt.widen.stripPoly match {
           case tp: MethodType =>
             val ptypes = tp.paramInfos
             val numParams = ptypes.length
@@ -1587,7 +1599,7 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
         }
 
         def narrowBySize(alts: List[TermRef]): List[TermRef] =
-          alts filter (alt => sizeFits(alt, alt.widen))
+          alts.filter(sizeFits(_))
 
         def narrowByShapes(alts: List[TermRef]): List[TermRef] = {
           if (normArgs exists untpd.isFunctionWithUnknownParamType)
@@ -1599,11 +1611,11 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
 
         def narrowByTrees(alts: List[TermRef], args: List[Tree], resultType: Type): List[TermRef] = {
           val alts2 = alts.filter(alt =>
-            isDirectlyApplicable(alt, targs, args, resultType)
+            isDirectlyApplicableMethodRef(alt, targs, args, resultType)
           )
           if (alts2.isEmpty && !ctx.isAfterTyper)
             alts.filter(alt =>
-              isApplicable(alt, targs, args, resultType, keepConstraint = false)
+              isApplicableMethodRef(alt, targs, args, resultType, keepConstraint = false)
             )
           else
             alts2
@@ -1846,4 +1858,3 @@ trait Applications extends Compatibility { self: Typer with Dynamic =>
     app
   }
 }
-

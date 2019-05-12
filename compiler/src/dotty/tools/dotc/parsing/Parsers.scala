@@ -717,7 +717,7 @@ object Parsers {
      *  @param negOffset   The offset of a preceding `-' sign, if any.
      *                     If the literal is not negated, negOffset = in.offset.
      */
-    def literal(negOffset: Int = in.offset, inPattern: Boolean = false): Tree = {
+    def literal(negOffset: Int = in.offset, inPattern: Boolean = false, inStringInterpolation: Boolean = false): Tree = {
 
       def literalOf(token: Token): Literal = {
         val isNegated = negOffset < in.offset
@@ -726,7 +726,7 @@ object Parsers {
           case INTLIT                 => in.intVal(isNegated).toInt
           case LONGLIT                => in.intVal(isNegated)
           case FLOATLIT               => in.floatVal(isNegated).toFloat
-          case DOUBLELIT              => in.floatVal(isNegated)
+          case DOUBLELIT              => in.doubleVal(isNegated)
           case STRINGLIT | STRINGPART => in.strVal
           case TRUE                   => true
           case FALSE                  => false
@@ -738,7 +738,19 @@ object Parsers {
         Literal(Constant(value))
       }
 
-      atSpan(negOffset) {
+      if (inStringInterpolation) {
+        val t = in.token match {
+          case STRINGLIT | STRINGPART =>
+            val value = in.strVal
+            atSpan(negOffset, negOffset, negOffset + value.length) { Literal(Constant(value)) }
+          case _ =>
+            syntaxErrorOrIncomplete(IllegalLiteral())
+            atSpan(negOffset) { Literal(Constant(null)) }
+        }
+        in.nextToken()
+        t
+      }
+      else atSpan(negOffset) {
         if (in.token == QUOTEID) {
           if ((staged & StageKind.Spliced) != 0 && isIdentifierStart(in.name(0))) {
             val t = atSpan(in.offset + 1) {
@@ -775,10 +787,11 @@ object Parsers {
     private def interpolatedString(inPattern: Boolean = false): Tree = atSpan(in.offset) {
       val segmentBuf = new ListBuffer[Tree]
       val interpolator = in.name
+      val isTripleQuoted = in.buf(in.charOffset) == '"' && in.buf(in.charOffset + 1) == '"'
       in.nextToken()
-      while (in.token == STRINGPART) {
+      def nextSegment(literalOffset: Offset) =
         segmentBuf += Thicket(
-            literal(inPattern = inPattern),
+            literal(literalOffset, inPattern = inPattern, inStringInterpolation = true),
             atSpan(in.offset) {
               if (in.token == IDENTIFIER)
                 termIdent()
@@ -798,8 +811,14 @@ object Parsers {
                 EmptyTree
               }
             })
-      }
-      if (in.token == STRINGLIT) segmentBuf += literal(inPattern = inPattern)
+
+      if (in.token == STRINGPART)
+        nextSegment(in.offset + (if (isTripleQuoted) 3 else 1))
+      while (in.token == STRINGPART)
+        nextSegment(in.offset)
+      if (in.token == STRINGLIT)
+        segmentBuf += literal(inPattern = inPattern, negOffset = in.offset, inStringInterpolation = true)
+
       InterpolatedString(interpolator, segmentBuf.toList)
     }
 
@@ -1200,14 +1219,15 @@ object Parsers {
      *                      |  ForExpr
      *                      |  [SimpleExpr `.'] id `=' Expr
      *                      |  SimpleExpr1 ArgumentExprs `=' Expr
-     *                      |  PostfixExpr [Ascription]
-     *                      |  [‘inline’] PostfixExpr `match' `{' CaseClauses `}'
+     *                      |  Expr2
+     *                      |  [‘inline’] Expr2 `match' `{' CaseClauses `}'
      *                      |  `implicit' `match' `{' ImplicitCaseClauses `}'
-     *  Bindings          ::= `(' [Binding {`,' Binding}] `)'
-     *  Binding           ::= (id | `_') [`:' Type]
-     *  Ascription        ::= `:' CompoundType
-     *                      | `:' Annotation {Annotation}
-     *                      | `:' `_' `*'
+     *  Bindings          ::=  `(' [Binding {`,' Binding}] `)'
+     *  Binding           ::=  (id | `_') [`:' Type]
+     *  Expr2             ::=  PostfixExpr [Ascription]
+     *  Ascription        ::=  `:' InfixType
+     *                      |  `:' Annotation {Annotation}
+     *                      |  `:' `_' `*'
      */
     val exprInParens: () => Tree = () => expr(Location.InParens)
 
@@ -1324,7 +1344,9 @@ object Parsers {
              t
          }
       case COLON =>
-        ascription(t, location)
+        in.nextToken()
+        val t1 = ascription(t, location)
+        if (in.token == MATCH) expr1Rest(t1, location) else t1
       case MATCH =>
         matchExpr(t, startOffset(t), Match)
       case _ =>
@@ -1332,7 +1354,6 @@ object Parsers {
     }
 
     def ascription(t: Tree, location: Location.Value): Tree = atSpan(startOffset(t)) {
-      in.skipToken()
       in.token match {
         case USCORE =>
           val uscoreStart = in.skipToken()
@@ -1801,7 +1822,10 @@ object Parsers {
      */
     def pattern1(): Tree = {
       val p = pattern2()
-      if (isVarPattern(p) && in.token == COLON) ascription(p, Location.InPattern)
+      if (isVarPattern(p) && in.token == COLON) {
+        in.nextToken()
+        ascription(p, Location.InPattern)
+      }
       else p
     }
 
@@ -2353,14 +2377,32 @@ object Parsers {
         tmplDef(start, mods)
     }
 
-    /** PatDef ::= Pattern2 {`,' Pattern2} [`:' Type] `=' Expr
-     *  VarDef ::= PatDef | id {`,' id} `:' Type `=' `_'
-     *  ValDcl ::= id {`,' id} `:' Type
-     *  VarDcl ::= id {`,' id} `:' Type
+    /** PatDef  ::=  ids [‘:’ Type] ‘=’ Expr
+     *            |  Pattern2 [‘:’ Type | Ascription] ‘=’ Expr
+     *  VarDef  ::=  PatDef | id {`,' id} `:' Type `=' `_'
+     *  ValDcl  ::=  id {`,' id} `:' Type
+     *  VarDcl  ::=  id {`,' id} `:' Type
      */
     def patDefOrDcl(start: Offset, mods: Modifiers): Tree = atSpan(start, nameStart) {
-      val lhs = commaSeparated(pattern2)
-      val tpt = typedOpt()
+      val first = pattern2()
+      var lhs = first match {
+        case id: Ident if in.token == COMMA =>
+          in.nextToken()
+          id :: commaSeparated(() => termIdent())
+        case _ =>
+          first :: Nil
+      }
+      def emptyType = TypeTree().withSpan(Span(in.lastOffset))
+      val tpt =
+        if (in.token == COLON) {
+          in.nextToken()
+          if (in.token == AT && lhs.tail.isEmpty) {
+            lhs = ascription(first, Location.ElseWhere) :: Nil
+            emptyType
+          }
+          else toplevelTyp()
+        }
+        else emptyType
       val rhs =
         if (tpt.isEmpty || in.token == EQUALS) {
           accept(EQUALS)
@@ -2374,9 +2416,9 @@ object Parsers {
       lhs match {
         case (id: BackquotedIdent) :: Nil if id.name.isTermName =>
           finalizeDef(BackquotedValDef(id.name.asTermName, tpt, rhs), mods, start)
-        case Ident(name: TermName) :: Nil => {
+        case Ident(name: TermName) :: Nil =>
           finalizeDef(ValDef(name, tpt, rhs), mods, start)
-        } case _ =>
+        case _ =>
           PatDef(mods, lhs, tpt, rhs)
       }
     }
@@ -2773,10 +2815,11 @@ object Parsers {
     }
 
     /** TopStatSeq ::= TopStat {semi TopStat}
-     *  TopStat ::= Annotations Modifiers Def
+     *  TopStat ::= Import
+     *            | Export
+     *            | Annotations Modifiers Def
      *            | Packaging
      *            | package object objectDef
-     *            | Import
      *            |
      */
     def topStatSeq(): List[Tree] = {
@@ -2810,6 +2853,7 @@ object Parsers {
 
     /** TemplateStatSeq  ::= [id [`:' Type] `=>'] TemplateStat {semi TemplateStat}
      *  TemplateStat     ::= Import
+     *                     | Export
      *                     | Annotations Modifiers Def
      *                     | Annotations Modifiers Dcl
      *                     | Expr1
@@ -2895,7 +2939,7 @@ object Parsers {
       var mods = defAnnotsMods(localModifierTokens)
       for (imod <- implicitMods.mods) mods = addMod(mods, imod)
       if (mods.is(Final)) {
-        // A final modifier means the local definition is "class-like".
+        // A final modifier means the local definition is "class-like".  // FIXME: Deal with modifiers separately
         tmplDef(start, mods)
       } else {
         defOrDcl(start, mods)

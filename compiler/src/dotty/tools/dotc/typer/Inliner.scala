@@ -61,7 +61,7 @@ object Inliner {
    *  @return   An `Inlined` node that refers to the original call and the inlined bindings
    *            and body that replace it.
    */
-  def inlineCall(tree: Tree, pt: Type)(implicit ctx: Context): Tree = {
+  def inlineCall(tree: Tree)(implicit ctx: Context): Tree = {
 
    /** Set the position of all trees logically contained in the expansion of
     *  inlined call `call` to the position of `call`. This transform is necessary
@@ -102,11 +102,11 @@ object Inliner {
 
     val tree1 = liftBindings(tree, identity)
     if (bindings.nonEmpty)
-      cpy.Block(tree)(bindings.toList, inlineCall(tree1, pt))
+      cpy.Block(tree)(bindings.toList, inlineCall(tree1))
     else if (enclosingInlineds.length < ctx.settings.XmaxInlines.value) {
       val body = bodyToInline(tree.symbol) // can typecheck the tree and thereby produce errors
       if (ctx.reporter.hasErrors) tree
-      else new Inliner(tree, body).inlined(pt, tree.sourcePos)
+      else new Inliner(tree, body).inlined(tree.sourcePos)
     }
     else
       errorTree(
@@ -119,60 +119,60 @@ object Inliner {
   }
 
   /** Replace `Inlined` node by a block that contains its bindings and expansion */
-  def dropInlined(inlined: Inlined)(implicit ctx: Context): Tree = {
+  def dropInlined(inlined: Inlined)(implicit ctx: Context): Tree =
     if (enclosingInlineds.nonEmpty) inlined // Remove in the outer most inlined call
-    else {
-      val inlinedAtSpan = inlined.call.span
-      val curSource = ctx.compilationUnit.source
+    else reposition(inlined, inlined.call.span)
 
-      // Tree copier that changes the source of all trees to `curSource`
-      val cpyWithNewSource = new TypedTreeCopier {
-        override protected def sourceFile(tree: tpd.Tree): SourceFile = curSource
-        override protected val untpdCpy: untpd.UntypedTreeCopier = new untpd.UntypedTreeCopier {
-          override protected def sourceFile(tree: untpd.Tree): SourceFile = curSource
-        }
+  def reposition(tree: Tree, span: Span)(implicit ctx: Context): Tree = {
+    val curSource = ctx.compilationUnit.source
+
+    // Tree copier that changes the source of all trees to `curSource`
+    val cpyWithNewSource = new TypedTreeCopier {
+      override protected def sourceFile(tree: tpd.Tree): SourceFile = curSource
+      override protected val untpdCpy: untpd.UntypedTreeCopier = new untpd.UntypedTreeCopier {
+        override protected def sourceFile(tree: untpd.Tree): SourceFile = curSource
       }
-
-      /** Removes all Inlined trees, replacing them with blocks.
-       *  Repositions all trees directly inside an inlined expansion of a non empty call to the position of the call.
-       *  Any tree directly inside an empty call (inlined in the inlined code) retains their position.
-       */
-      class Reposition extends TreeMap(cpyWithNewSource) {
-        def finalize(tree: Tree, copied: untpd.Tree) =
-          copied.withSpan(tree.span).withAttachmentsFrom(tree).withTypeUnchecked(tree.tpe)
-
-        def reposition(tree: Tree)(implicit ctx: Context): Tree = enclosingInlineds match {
-          case call :: _ if call.symbol.source != curSource =>
-            tree match {
-              case _: EmptyTree[_] | _: EmptyValDef[_] => tree
-              case _ =>
-                // Until we implement JSR-45, we cannot represent in output positions in other source files.
-                // So, reposition inlined code from other files with the call position:
-                tree.withSpan(inlinedAtSpan)
-            }
-          case _ => tree
-        }
-
-        override def transform(tree: Tree)(implicit ctx: Context): Tree = {
-          val transformed = reposition(tree match {
-            case tree: Inlined =>
-              tpd.seq(transformSub(tree.bindings), transform(tree.expansion)(inlineContext(tree.call)))(ctx.withSource(curSource)) : Tree
-            case tree: Ident => finalize(tree, untpd.Ident(tree.name)(curSource))
-            case tree: Literal => finalize(tree, untpd.Literal(tree.const)(curSource))
-            case tree: This => finalize(tree, untpd.This(tree.qual)(curSource))
-            case tree: JavaSeqLiteral => finalize(tree, untpd.JavaSeqLiteral(transform(tree.elems), transform(tree.elemtpt))(curSource))
-            case tree: SeqLiteral => finalize(tree, untpd.SeqLiteral(transform(tree.elems), transform(tree.elemtpt))(curSource))
-            case tree: TypeTree => tpd.TypeTree(tree.tpe)(ctx.withSource(curSource)).withSpan(tree.span)
-            case tree: Bind => finalize(tree, untpd.Bind(tree.name, transform(tree.body))(curSource))
-            case _ => super.transform(tree)
-          })
-          assert(transformed.isInstanceOf[EmptyTree[_]] || transformed.isInstanceOf[EmptyValDef[_]] || transformed.source == curSource)
-          transformed
-        }
-      }
-
-      (new Reposition).transform(inlined)
     }
+
+    /** Removes all Inlined trees, replacing them with blocks.
+     *  Repositions all trees directly inside an inlined expansion of a non empty call to the position of the call.
+     *  Any tree directly inside an empty call (inlined in the inlined code) retains their position.
+     */
+    class Reposition extends TreeMap(cpyWithNewSource) {
+      def finalize(tree: Tree, copied: untpd.Tree) =
+        copied.withSpan(tree.span).withAttachmentsFrom(tree).withTypeUnchecked(tree.tpe)
+
+      def reposition(tree: Tree)(implicit ctx: Context): Tree = enclosingInlineds match {
+        case call :: _ if call.symbol.source != curSource =>
+          tree match {
+            case _: EmptyTree[_] | _: EmptyValDef[_] => tree
+            case _ =>
+              // Until we implement JSR-45, we cannot represent in output positions in other source files.
+              // So, reposition inlined code from other files with the call position:
+              tree.withSpan(span)
+          }
+        case _ => tree
+      }
+
+      override def transform(tree: Tree)(implicit ctx: Context): Tree = {
+        val transformed = reposition(tree match {
+          case tree: Inlined =>
+            tpd.seq(transformSub(tree.bindings), transform(tree.expansion)(inlineContext(tree.call)))(ctx.withSource(curSource)) : Tree
+          case tree: Ident => finalize(tree, untpd.Ident(tree.name)(curSource))
+          case tree: Literal => finalize(tree, untpd.Literal(tree.const)(curSource))
+          case tree: This => finalize(tree, untpd.This(tree.qual)(curSource))
+          case tree: JavaSeqLiteral => finalize(tree, untpd.JavaSeqLiteral(transform(tree.elems), transform(tree.elemtpt))(curSource))
+          case tree: SeqLiteral => finalize(tree, untpd.SeqLiteral(transform(tree.elems), transform(tree.elemtpt))(curSource))
+          case tree: TypeTree => tpd.TypeTree(tree.tpe)(ctx.withSource(curSource)).withSpan(tree.span)
+          case tree: Bind => finalize(tree, untpd.Bind(tree.name, transform(tree.body))(curSource))
+          case _ => super.transform(tree)
+        })
+        assert(transformed.isInstanceOf[EmptyTree[_]] || transformed.isInstanceOf[EmptyValDef[_]] || transformed.source == curSource)
+        transformed
+      }
+    }
+
+    (new Reposition).transform(tree)
   }
 
   /** Leave only a call trace consisting of
@@ -285,7 +285,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
       (tp.paramNames, tp.paramInfos, argss.head).zipped.foreach { (name, paramtp, arg) =>
         paramSpan(name) = arg.span
         paramBinding(name) = arg.tpe.dealias match {
-          case _: SingletonType if isIdempotentExpr(arg) => arg.tpe
+          case _: SingletonType if isIdempotentPath(arg) => arg.tpe
           case _ => paramBindingDef(name, paramtp, arg, bindingsBuf).symbol.termRef
         }
       }
@@ -384,7 +384,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
     }
 
   /** The Inlined node representing the inlined call */
-  def inlined(pt: Type, sourcePos: SourcePosition): Tree = {
+  def inlined(sourcePos: SourcePosition): Tree = {
 
     if (callTypeArgs.length == 1)
       if (inlinedMethod == defn.Compiletime_constValue) {
@@ -509,7 +509,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
       }
 
       // Run a typing pass over the inlined tree. See InlineTyper for details.
-      val expansion1 = inlineTyper.typed(expansion, pt)(inlineCtx)
+      val expansion1 = inlineTyper.typed(expansion)(inlineCtx)
 
       if (ctx.settings.verbose.value) {
         inlining.println(i"to inline = $rhsToInline")

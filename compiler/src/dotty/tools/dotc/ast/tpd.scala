@@ -1181,7 +1181,13 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
   /** An extractor for typed splices */
   object Splice {
     def apply(tree: Tree)(implicit ctx: Context): Tree = {
-      val argType = tree.tpe.baseType(defn.QuotedExprClass).argTypesHi.head
+      val baseType = tree.tpe.baseType(defn.QuotedExprClass)
+      val argType =
+        if (baseType != NoType) baseType.argTypesHi.head
+        else {
+          assert(ctx.reporter.hasErrors)
+          defn.NothingType
+        }
       ref(defn.InternalQuoted_exprSplice).appliedToType(argType).appliedTo(tree)
     }
     def unapply(tree: Tree)(implicit ctx: Context): Option[Tree] = tree match {

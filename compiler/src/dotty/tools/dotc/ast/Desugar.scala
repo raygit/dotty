@@ -14,6 +14,7 @@ import collection.mutable.ListBuffer
 import reporting.diagnostic.messages._
 import reporting.trace
 import annotation.constructorOnly
+import printing.Formatting.hl
 
 import scala.annotation.internal.sharable
 
@@ -31,6 +32,9 @@ object desugar {
    *  deriving class.
    */
   val DerivingCompanion: Property.Key[SourcePosition] = new Property.Key
+
+  /** An attachment for match expressions generated from a PatDef */
+  val PatDefMatch: Property.Key[Unit] = new Property.Key
 
   /** Info of a variable in a pattern: The named tree and its type */
   private type VarInfo = (NameTree, Tree)
@@ -211,6 +215,19 @@ object desugar {
       case _ =>
         rhs
     }
+
+    def dropContextBounds(tparam: TypeDef): TypeDef = {
+      def dropInRhs(rhs: Tree): Tree = rhs match {
+        case ContextBounds(tbounds, _) =>
+          tbounds
+        case rhs @ LambdaTypeTree(tparams, body) =>
+          cpy.LambdaTypeTree(rhs)(tparams, dropInRhs(body))
+        case _ =>
+          rhs
+      }
+      cpy.TypeDef(tparam)(rhs = dropInRhs(tparam.rhs))
+    }
+
     val tparams1 = tparams mapConserve { tparam =>
       cpy.TypeDef(tparam)(rhs = desugarContextBounds(tparam.rhs))
     }
@@ -239,17 +256,12 @@ object desugar {
     def normalizedVparamss = meth1.vparamss map (_ map (vparam =>
       cpy.ValDef(vparam)(rhs = EmptyTree)))
 
-    def dropContextBound(tparam: TypeDef) = tparam.rhs match {
-      case ContextBounds(tbounds, _) => cpy.TypeDef(tparam)(rhs = tbounds)
-      case _ => tparam
-    }
-
     def defaultGetters(vparamss: List[List[ValDef]], n: Int): List[DefDef] = vparamss match {
       case (vparam :: vparams) :: vparamss1 =>
         def defaultGetter: DefDef =
           DefDef(
             name = DefaultGetterName(methName, n),
-            tparams = meth.tparams.map(tparam => dropContextBound(toDefParam(tparam))),
+            tparams = meth.tparams.map(tparam => dropContextBounds(toDefParam(tparam))),
             vparamss = takeUpTo(normalizedVparamss.nestedMap(toDefParam), n),
             tpt = TypeTree(),
             rhs = vparam.rhs
@@ -274,27 +286,21 @@ object desugar {
 
   /** Transforms a definition with a name starting with a `$` in a quoted pattern into a `quoted.binding.Binding` splice.
    *
-   *  The desugaring consists in renaming the the definition and adding the `@patternBindHole` annotation. This
-   *  annotation is used during typing to perform the full transformation.
+   *  The desugaring consists in adding the `@patternBindHole` annotation. This annotation is used during typing to perform the full transformation.
    *
    *  A definition
    *  ```scala
-   *    case '{ def $a(...) = ... a() ...; ... a() ... }
+   *    case '{ def $a(...) = ...; ... `$a`() ... } => a
    *  ```
    *  into
    *  ```scala
-   *    case '{ @patternBindHole def a(...) = ... a() ...; ... a() ... }
+   *    case '{ @patternBindHole def `$a`(...) = ...; ... `$a`() ... } => a
    *  ```
    */
   def transformQuotedPatternName(tree: ValOrDefDef)(implicit ctx: Context): ValOrDefDef = {
     if (ctx.mode.is(Mode.QuotedPattern) && !tree.isBackquoted && tree.name != nme.ANON_FUN && tree.name.startsWith("$")) {
-      val name = tree.name.toString.substring(1).toTermName
-      val newTree: ValOrDefDef = tree match {
-        case tree: ValDef => cpy.ValDef(tree)(name)
-        case tree: DefDef => cpy.DefDef(tree)(name)
-      }
       val mods = tree.mods.withAddedAnnotation(New(ref(defn.InternalQuoted_patternBindHoleAnnot.typeRef)).withSpan(tree.span))
-      newTree.withMods(mods)
+      tree.withMods(mods)
     } else tree
   }
 
@@ -760,12 +766,12 @@ object desugar {
     def flagSourcePos(flag: FlagSet) = mods.mods.find(_.flags == flag).fold(mdef.sourcePos)(_.sourcePos)
 
     if (mods.is(Abstract))
-      ctx.error(hl"""$Abstract modifier cannot be used for objects""", flagSourcePos(Abstract))
+      ctx.error(em"${hl("abstract")} modifier cannot be used for objects", flagSourcePos(Abstract))
     if (mods.is(Sealed))
-      ctx.error(hl"""$Sealed modifier is redundant for objects""", flagSourcePos(Sealed))
+      ctx.error(em"${hl("sealed")} modifier is redundant for objects", flagSourcePos(Sealed))
     // Maybe this should be an error; see https://github.com/scala/bug/issues/11094.
     if (mods.is(Final) && !mods.is(Synthetic))
-      ctx.warning(hl"""$Final modifier is redundant for objects""", flagSourcePos(Final))
+      ctx.warning(em"${hl("final")} modifier is redundant for objects", flagSourcePos(Final))
 
     if (mods is Package)
       PackageDef(Ident(moduleName), cpy.ModuleDef(mdef)(nme.PACKAGE, impl).withMods(mods &~ Package) :: Nil)
@@ -826,7 +832,7 @@ object desugar {
       val moduleName = tdef.name.toTermName
       val localRef = Select(Ident(moduleName), tdef.name)
       localRef.pushAttachment(SuppressAccessCheck, ())
-      val aliasType = cpy.TypeDef(tdef)(rhs = completeForwarder(localRef))
+      val aliasType = cpy.TypeDef(tdef)(rhs = completeForwarder(localRef)).withSpan(tdef.span.startPos)
       val localType = tdef.withMods(Modifiers(Synthetic | Opaque).withPrivateWithin(tdef.name))
 
       val companions = moduleDef(ModuleDef(
@@ -954,7 +960,11 @@ object desugar {
       // - `pat` is a tuple of N variables or wildcard patterns like `(x1, x2, ..., xN)`
       val tupleOptimizable = forallResults(rhs, isMatchingTuple)
 
-      def rhsUnchecked = makeAnnotated("scala.unchecked", rhs)
+      def rhsUnchecked = {
+        val rhs1 = makeAnnotated("scala.unchecked", rhs)
+        rhs1.pushAttachment(PatDefMatch, ())
+        rhs1
+      }
       val vars =
         if (tupleOptimizable) // include `_`
           pat match {
@@ -1157,9 +1167,10 @@ object desugar {
     Function(param :: Nil, Block(vdefs, body))
   }
 
-  def makeContextualFunction(formals: List[Type], body: Tree)(implicit ctx: Context): Tree = {
-    val params = makeImplicitParameters(formals.map(TypeTree), Given)
-    new FunctionWithMods(params, body, Modifiers(Implicit | Given))
+  def makeContextualFunction(formals: List[Type], body: Tree, isErased: Boolean)(implicit ctx: Context): Tree = {
+    val mods = if (isErased) Given | Erased else Given
+    val params = makeImplicitParameters(formals.map(TypeTree), mods)
+    new FunctionWithMods(params, body, Modifiers(Implicit | mods))
   }
 
   /** Add annotation to tree:
@@ -1547,6 +1558,14 @@ object desugar {
         trees foreach collect
       case Block(Nil, expr) =>
         collect(expr)
+      case Quote(expr) =>
+        new TreeTraverser {
+          def traverse(tree: untpd.Tree)(implicit ctx: Context): Unit = tree match {
+            case Splice(expr) => collect(expr)
+            case TypSplice(expr) => collect(expr)
+            case _ => traverseChildren(tree)
+          }
+        }.traverse(expr)
       case _ =>
     }
     collect(tree)

@@ -94,7 +94,7 @@ semi             ::=  ‘;’ |  nl {nl}
 ```
 abstract  case      catch     class     def       do        else      enum
 erased    extends   false     final     finally   for       given     if
-implicit  import    instance  lazy      match     new       null      object
+implicit  implied   import    lazy      match     new       null      object
 package   private   protected override  return    super     sealed    then
 throw     trait     true      try       type      val       var       while
 with      yield
@@ -196,9 +196,10 @@ Expr1             ::=  ‘if’ ‘(’ Expr ‘)’ {nl}
                     |  ForExpr
                     |  [SimpleExpr ‘.’] id ‘=’ Expr                             Assign(expr, expr)
                     |  SimpleExpr1 ArgumentExprs ‘=’ Expr                       Assign(expr, expr)
-                    |  PostfixExpr [Ascription]
-                    |  [‘inline’] PostfixExpr ‘match’ ‘{’ CaseClauses ‘}’       Match(expr, cases) -- point on match
+                    |  Expr2
+                    |  [‘inline’] Expr2 ‘match’ ‘{’ CaseClauses ‘}’             Match(expr, cases) -- point on match
                     |  ‘implicit’ ‘match’ ‘{’ ImplicitCaseClauses ‘}’
+Expr2             ::=  PostfixExpr [Ascription]
 Ascription        ::=  ‘:’ InfixType                                            Typed(expr, tp)
                     |  ‘:’ Annotation {Annotation}                              Typed(expr, Annotated(EmptyTree, annot)*)
 Catches           ::=  ‘catch’ Expr
@@ -224,17 +225,17 @@ SimpleExpr1       ::=  Literal
 Quoted            ::=  ‘'’ ‘{’ Block ‘}’
                     |  ‘'’ ‘[’ Type ‘]’
 ExprsInParens     ::=  ExprInParens {‘,’ ExprInParens}
-ExprInParens      ::=  PostfixExpr ‘:’ Type
+ExprInParens      ::=  PostfixExpr ‘:’ Type                                     -- normal Expr allows only RefinedType here
                     |  Expr
 ParArgumentExprs  ::=  ‘(’ ExprsInParens ‘)’                                    exprs
-                    |  ‘(’ [ExprsInParens] PostfixExpr ‘:’ ‘_’ ‘*’ ‘)’          exprs :+ Typed(expr, Ident(wildcardStar))
+                    |  ‘(’ [ExprsInParens ‘,’] PostfixExpr ‘:’ ‘_’ ‘*’ ‘)’          exprs :+ Typed(expr, Ident(wildcardStar))
 ArgumentExprs     ::=  ParArgumentExprs
                     |  [nl] BlockExpr
 BlockExpr         ::=  ‘{’ CaseClauses | Block ‘}’
 Block             ::=  {BlockStat semi} [BlockResult]                           Block(stats, expr?)
 BlockStat         ::=  Import
-                    |  {Annotation} [‘implicit’ | ‘lazy’] Def
-                    |  {Annotation} {LocalModifier} TmplDef
+                    |  {Annotation [nl]} [‘implicit’ | ‘lazy’] Def
+                    |  {Annotation [nl]} {LocalModifier} TmplDef
                     |  Expr1
 
 ForExpr           ::=  ‘for’ (‘(’ Enumerators ‘)’ | ‘{’ Enumerators ‘}’)        ForYield(enums, expr)
@@ -358,7 +359,8 @@ Def               ::=  ‘val’ PatDef
                     |  ‘type’ {nl} TypeDcl
                     |  TmplDef
                     |  INT
-PatDef            ::=  Pattern2 {‘,’ Pattern2} [‘:’ Type] ‘=’ Expr              PatDef(_, pats, tpe?, expr)
+PatDef            ::=  ids [‘:’ Type] ‘=’ Expr
+                    |  Pattern2 [‘:’ Type | Ascription] ‘=’ Expr                PatDef(_, pats, tpe?, expr)
 VarDef            ::=  PatDef
                     |  ids ‘:’ Type ‘=’ ‘_’
 DefDef            ::=  DefSig [(‘:’ | ‘<:’) Type] ‘=’ Expr                      DefDef(_, name, tparams, vparamss, tpe, expr)
@@ -385,6 +387,7 @@ InheritClauses    ::=  [‘extends’ ConstrApps] [‘derives’ QualId {‘,’
 ConstrApps        ::=  ConstrApp {‘with’ ConstrApp}
                     |  ConstrApp {‘,’ ConstrApp}
 ConstrApp         ::=  AnnotType {ArgumentExprs}                                Apply(tp, args)
+                    |  ‘(’ ConstrApp {‘given’ (InfixExpr | ParArgumentExprs)} ‘)’
 ConstrExpr        ::=  SelfInvocation
                     |  ConstrBlock
 SelfInvocation    ::=  ‘this’ ArgumentExprs {ArgumentExprs}
@@ -392,6 +395,7 @@ ConstrBlock       ::=  ‘{’ SelfInvocation {semi BlockStat} ‘}’
 
 TemplateBody      ::=  [nl] ‘{’ [SelfType] TemplateStat {semi TemplateStat} ‘}’ (self, stats)
 TemplateStat      ::=  Import
+                    |  Export
                     |  {Annotation [nl]} {Modifier} Def
                     |  {Annotation [nl]} {Modifier} Dcl
                     |  Expr1
